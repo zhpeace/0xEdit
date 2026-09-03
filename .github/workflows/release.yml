@@ -49,7 +49,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
           tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
-          releaseName: '0xEdit ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}'
+          releaseName: "0xEdit ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}"
           releaseBody: |
             ## 0xEdit ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
 
