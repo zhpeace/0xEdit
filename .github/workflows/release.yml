@@ -1,0 +1,57 @@
+name: release
+
+# 自动发布：推送 v* tag 时构建并创建 GitHub Release（附安装包）
+# 也可手动触发：workflow_dispatch 时若填了 tag_name 则发布到该 tag，留空则只构建不发布
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: '手动指定 tag（如 v0.2.0）；留空则只构建不发布'
+        required: false
+        default: ''
+
+jobs:
+  release:
+    name: Build & Publish
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend tests (unit + build)
+        run: |
+          npm run test:unit
+          npm run build
+
+      - name: Build & create GitHub Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
+          releaseName: '0xEdit ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}'
+          releaseBody: |
+            ## 0xEdit ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
+
+            由 GitHub Actions 自动构建发布。功能说明与安装指引请查看仓库 README。
+
+            > macOS 安装包未签名，首次打开如遇系统提示，请右键图标 → 打开。
+          releaseDraft: false
+          prerelease: false
