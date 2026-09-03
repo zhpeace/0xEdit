@@ -12,7 +12,7 @@ export interface RectLine {
 }
 
 // 给定矩形选择的两个角点（start、cur）与各行几何，返回各行的选择区间 [from, to)。
-// 行号按 1-based；超出行尾的部分会被夹到行尾（区间可能为空，与 UltraEdit 行为一致）。
+// 行号按 1-based；超出行尾的部分会被夹到行尾（区间可能为空，与经典编辑器行为一致）。
 export function computeRectRanges(
   start: RectPos,
   cur: RectPos,

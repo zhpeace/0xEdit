@@ -163,7 +163,7 @@ function themeBase(): import("@codemirror/state").Extension {
 const THEMES: Record<string, { name: string; pair: string }> = {
   "default-dark": { name: "默认深色", pair: "default-light" },
   "default-light": { name: "默认浅色", pair: "default-dark" },
-  "ultraedit": { name: "UltraEdit 经典", pair: "default-light" },
+  "ultraedit": { name: "经典蓝", pair: "default-light" },
   "solarized-dark": { name: "Solarized 深色", pair: "solarized-light" },
   "solarized-light": { name: "Solarized 浅色", pair: "solarized-dark" },
   "monokai": { name: "Monokai", pair: "default-light" },
