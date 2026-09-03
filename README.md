@@ -1,7 +1,7 @@
 # 0xEdit
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)
+![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS-important.svg)
 [![CI](https://github.com/zhpeace/0xEdit/actions/workflows/ci.yml/badge.svg)](https://github.com/zhpeace/0xEdit/actions/workflows/ci.yml)
 
@@ -11,13 +11,23 @@
 
 | 类别 | 能力 |
 |---|---|
-| **核心编辑** | 多标签页 + 文件树、40+ 语言语法高亮、查找/替换（正则）、列编辑模式、十六进制编辑器、编码检测/转换（UTF-8/16、GBK） |
+| **核心编辑** | 多标签页 + 文件树、40+ 语言语法高亮、查找/替换（正则）、列编辑模式、十六进制编辑器、编码检测/转换（UTF-8/16、GBK）、8 套内置主题（含 UltraEdit 经典、Solarized、Monokai 等） |
 | **文本工具** | 代码折叠、书签、行操作/排序、大小写转换、JSON/HTML/XML 格式化、Base64/URL 编解码、拆分窗口、多光标 |
 | **跨文件与远程** | 跨目录查找替换、并排 diff 与合并、目录同步/比较、FTP/SFTP 远程文件树（私钥认证、加密传输、远程直接编辑回写） |
 | **自动化** | 宏录制/回放、JS 脚本、命令面板、Snippets、拼写检查、外部工具/终端集成 |
 | **可靠性** | 自动保存、崩溃恢复、会话记忆、多窗口、打印/导出 PDF |
 
 完整功能清单见 [FEATURES.md](./FEATURES.md)。
+
+## 📸 截图预览
+
+| 代码编辑 | 十六进制编辑器 |
+|---|---|
+| ![代码编辑](docs/screenshots/main-editor.png) | ![十六进制编辑器](docs/screenshots/hex-editor.png) |
+
+| 设置面板（8 套主题） | 命令面板 |
+|---|---|
+| ![设置面板](docs/screenshots/settings-themes.png) | ![命令面板](docs/screenshots/command-palette.png) |
 
 ## 🛠 技术架构
 

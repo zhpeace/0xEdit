@@ -2275,3 +2275,85 @@ button.primary,
   color: var(--fg-dim);
   margin-top: 2px;
 }
+
+/* ============================================================
+   预设主题（html[data-theme="xxx"]，不依赖 .dark class）
+   ============================================================ */
+
+/* UltraEdit 经典（深色） */
+html[data-theme="ultraedit"] {
+  --bg: #2b2b2b; --bg2: #333333; --bg3: #3c3c3c;
+  --fg: #d4d4d4; --fg-dim: #8a8a8a; --border: #4a4a4a;
+  --accent: #007acc; --accent-hover: #1a8ad6; --accent-fg: #ffffff; --danger: #f44747;
+  --ed-bg: #2b2b2b; --ed-fg: #d4d4d4; --ed-gutter: #252526;
+  --ed-line-num: #858585; --ed-line-num-active: #c9d1d9;
+  --ed-active-line: #2a2d2e; --ed-sel: rgba(38,79,120,0.6); --ed-bracket: #007acc;
+  --ed-search-match: #ffcc00; --ed-search-match-sel: #ff9900;
+  --hex-cell: #569cd6; --hex-changed: #ff8f6b; --hex-ascii: #d4d4d4;
+  --hex-sel: #264f78; --hex-sel-border: #007acc;
+}
+
+/* Solarized Dark */
+html[data-theme="solarized-dark"] {
+  --bg: #002b36; --bg2: #073642; --bg3: #0a3f4d;
+  --fg: #839496; --fg-dim: #586e75; --border: #073642;
+  --accent: #268bd2; --accent-hover: #2aa198; --accent-fg: #ffffff; --danger: #dc322f;
+  --ed-bg: #002b36; --ed-fg: #93a1a1; --ed-gutter: #00212b;
+  --ed-line-num: #586e75; --ed-line-num-active: #93a1a1;
+  --ed-active-line: #073642; --ed-sel: rgba(38,139,210,0.3); --ed-bracket: #2aa198;
+  --ed-search-match: #b58900; --ed-search-match-sel: #cb4b16;
+  --hex-cell: #268bd2; --hex-changed: #dc322f; --hex-ascii: #93a1a1;
+  --hex-sel: #073642; --hex-sel-border: #268bd2;
+}
+
+/* Solarized Light */
+html[data-theme="solarized-light"] {
+  --bg: #fdf6e3; --bg2: #eee8d5; --bg3: #e4dcc0;
+  --fg: #657b83; --fg-dim: #93a1a1; --border: #eee8d5;
+  --accent: #268bd2; --accent-hover: #2aa198; --accent-fg: #ffffff; --danger: #dc322f;
+  --ed-bg: #fdf6e3; --ed-fg: #657b83; --ed-gutter: #eee8d5;
+  --ed-line-num: #93a1a1; --ed-line-num-active: #657b83;
+  --ed-active-line: #eee8d5; --ed-sel: rgba(38,139,210,0.2); --ed-bracket: #2aa198;
+  --ed-search-match: #b58900; --ed-search-match-sel: #cb4b16;
+  --hex-cell: #268bd2; --hex-changed: #dc322f; --hex-ascii: #657b83;
+  --hex-sel: #eee8d5; --hex-sel-border: #268bd2;
+}
+
+/* Monokai */
+html[data-theme="monokai"] {
+  --bg: #272822; --bg2: #1e1f1c; --bg3: #3e3d32;
+  --fg: #f8f8f2; --fg-dim: #75715e; --border: #49483e;
+  --accent: #f92672; --accent-hover: #fd5ff0; --accent-fg: #ffffff; --danger: #ff6188;
+  --ed-bg: #272822; --ed-fg: #f8f8f2; --ed-gutter: #1e1f1c;
+  --ed-line-num: #75715e; --ed-line-num-active: #f8f8f2;
+  --ed-active-line: #3e3d32; --ed-sel: rgba(249,38,114,0.3); --ed-bracket: #a6e22e;
+  --ed-search-match: #e6db74; --ed-search-match-sel: #a6e22e;
+  --hex-cell: #66d9ef; --hex-changed: #ff6188; --hex-ascii: #f8f8f2;
+  --hex-sel: #49483e; --hex-sel-border: #f92672;
+}
+
+/* 高对比度（深色） */
+html[data-theme="high-contrast"] {
+  --bg: #000000; --bg2: #0a0a0a; --bg3: #1a1a1a;
+  --fg: #ffffff; --fg-dim: #cccccc; --border: #ffffff;
+  --accent: #00ff00; --accent-hover: #00cc00; --accent-fg: #000000; --danger: #ff0000;
+  --ed-bg: #000000; --ed-fg: #ffffff; --ed-gutter: #000000;
+  --ed-line-num: #ffff00; --ed-line-num-active: #ffffff;
+  --ed-active-line: #1a1a1a; --ed-sel: rgba(0,0,255,0.6); --ed-bracket: #00ffff;
+  --ed-search-match: #ffff00; --ed-search-match-sel: #ff0000;
+  --hex-cell: #00ffff; --hex-changed: #ff0000; --hex-ascii: #ffffff;
+  --hex-sel: #0000ff; --hex-sel-border: #00ff00;
+}
+
+/* GitHub Light */
+html[data-theme="github-light"] {
+  --bg: #f6f8fa; --bg2: #ffffff; --bg3: #eaeef2;
+  --fg: #1f2328; --fg-dim: #656d76; --border: #d0d7de;
+  --accent: #0969da; --accent-hover: #0550ae; --accent-fg: #ffffff; --danger: #cf222e;
+  --ed-bg: #ffffff; --ed-fg: #1f2328; --ed-gutter: #f6f8fa;
+  --ed-line-num: #8c959f; --ed-line-num-active: #1f2328;
+  --ed-active-line: #ddf4ff; --ed-sel: rgba(9,105,218,0.2); --ed-bracket: #0969da;
+  --ed-search-match: #fff8c5; --ed-search-match-sel: #d4a72c;
+  --hex-cell: #0550ae; --hex-changed: #cf222e; --hex-ascii: #1f2328;
+  --hex-sel: #ddf4ff; --hex-sel-border: #0969da;
+}

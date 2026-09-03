@@ -159,6 +159,24 @@ function themeBase(): import("@codemirror/state").Extension {
   );
 }
 
+// 预设主题：id → { 显示名, 深浅配对（toggleTheme 切换目标） }
+const THEMES: Record<string, { name: string; pair: string }> = {
+  "default-dark": { name: "默认深色", pair: "default-light" },
+  "default-light": { name: "默认浅色", pair: "default-dark" },
+  "ultraedit": { name: "UltraEdit 经典", pair: "default-light" },
+  "solarized-dark": { name: "Solarized 深色", pair: "solarized-light" },
+  "solarized-light": { name: "Solarized 浅色", pair: "solarized-dark" },
+  "monokai": { name: "Monokai", pair: "default-light" },
+  "high-contrast": { name: "高对比度", pair: "default-light" },
+  "github-light": { name: "GitHub 浅色", pair: "default-dark" },
+};
+
+const DARK_THEMES = new Set(["default-dark", "ultraedit", "solarized-dark", "monokai", "high-contrast"]);
+
+function isDarkTheme(id: string): boolean {
+  return DARK_THEMES.has(id);
+}
+
 export class App {
   private view: EditorView | null = null;
   private docs = new Map<string, Document>();
@@ -1697,9 +1715,10 @@ export class App {
         apply("html.dark", data.dark);
       }
       const theme = localStorage.getItem("uec.theme");
-      const root = document.documentElement;
-      if (theme === "light") root.classList.remove("dark");
-      else if (theme === "dark") root.classList.add("dark");
+      if (theme === "light") this.applyTheme("default-light");
+      else if (theme === "dark") this.applyTheme("default-dark");
+      else if (theme && THEMES[theme]) this.applyTheme(theme);
+      else this.applyTheme("default-dark");
       const font = localStorage.getItem("uec.font");
       if (font) document.documentElement.style.setProperty("--ed-font", font);
       this.prefWrap = localStorage.getItem("uec.wrap") === "1";
@@ -1760,9 +1779,12 @@ export class App {
   }
 
   private settingsDialog() {
-    const root = document.documentElement;
     const curFont = localStorage.getItem("uec.font") || "13px";
-    const curTheme = root.classList.contains("dark") ? "dark" : "light";
+    const storedTheme = localStorage.getItem("uec.theme");
+    const curTheme = storedTheme === "dark" ? "default-dark" : storedTheme === "light" ? "default-light" : storedTheme || "default-dark";
+    const themeOptions = Object.entries(THEMES).map(([id, t]) =>
+      `<option value="${id}" ${curTheme === id ? "selected" : ""}>${t.name}</option>`
+    ).join("");
     const rows = [
       ["新建", "new", "n"], ["打开", "open", "o"], ["保存", "save", "s"], ["另存为", "saveAs", "s"],
       ["查找", "find", "f"], ["替换", "replace", "f"], ["跳转行", "goto", "g"], ["关闭标签", "closeTab", "w"],
@@ -1781,8 +1803,7 @@ export class App {
       <div class="sort-opt" style="margin-bottom:10px;">${t("编辑器字号：")} <input id="set-font" type="number" min="8" max="28" value="${parseInt(curFont, 10)}" style="width:64px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);"/> px</div>
       <div class="sort-opt" style="margin-bottom:10px;">${t("主题：")}
         <select id="set-theme" style="background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:3px 6px;">
-          <option value="dark" ${curTheme === "dark" ? "selected" : ""}>${t("深色")}</option>
-          <option value="light" ${curTheme === "light" ? "selected" : ""}>${t("浅色")}</option>
+          ${themeOptions}
         </select>
       </div>
       <div class="fs-options" style="margin:8px 0;">
@@ -1806,8 +1827,7 @@ export class App {
       this.setWrap((modal.querySelector("#set-wrap") as HTMLInputElement).checked);
       this.setWhitespace((modal.querySelector("#set-ws") as HTMLInputElement).checked);
       this.setPrefPreview((modal.querySelector("#set-pv") as HTMLInputElement).checked);
-      root.classList.toggle("dark", theme === "dark");
-      localStorage.setItem("uec.theme", theme);
+      this.applyTheme(theme);
       const keys: Record<string, { key: string; shift: boolean }> = {};
       modal.querySelectorAll("[data-shkey]").forEach((el) => {
         const act = (el as HTMLInputElement).dataset.shkey!;
@@ -2829,12 +2849,25 @@ export class App {
     if (toggle) toggle.textContent = "›";
   }
 
-  private toggleTheme() {
+  private applyTheme(id: string) {
     const root = document.documentElement;
-    root.classList.toggle("dark");
+    root.removeAttribute("data-theme");
+    root.classList.remove("dark");
+    if (id === "default-dark") {
+      root.classList.add("dark");
+    } else if (id !== "default-light") {
+      root.setAttribute("data-theme", id);
+    }
+    localStorage.setItem("uec.theme", id);
     const btn = document.querySelector<HTMLElement>('[data-action="theme"]');
-    btn?.classList.toggle("active", root.classList.contains("dark"));
+    btn?.classList.toggle("active", isDarkTheme(id));
     this.view?.requestMeasure();
+  }
+
+  private toggleTheme() {
+    const cur = localStorage.getItem("uec.theme") || "default-dark";
+    const pair = THEMES[cur]?.pair || "default-dark";
+    this.applyTheme(pair);
   }
 
   // ---------------------------------------------------------------- save/open
