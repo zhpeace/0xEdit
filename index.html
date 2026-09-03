@@ -14,26 +14,26 @@
       <header id="menubar"></header>
       <nav id="toolbar">
         <div class="toolbar-group" id="toolbar-file">
-          <button class="tool-btn" data-action="new" title="新建 (⌘N)">＋</button>
-          <button class="tool-btn" data-action="open" title="打开文件 (⌘O)">🗀</button>
-          <button class="tool-btn" data-action="open-folder" title="打开文件夹">🗁</button>
-          <button class="tool-btn" data-action="save" title="保存 (⌘S)">💾</button>
+          <button class="tool-btn" data-action="new" title="新建 (⌘N)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 1.5h4l3.5 3.5v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1z"/><path d="M9 1.5V5h3.5"/><path d="M8 7.5v4M6 9.5h4"/></svg></button>
+          <button class="tool-btn" data-action="open" title="打开文件 (⌘O)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.5h4.5L12 5v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1z"/><path d="M8.5 1.5V5H12"/></svg></button>
+          <button class="tool-btn" data-action="open-folder" title="打开文件夹"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5a1 1 0 0 1 1-1h3l1.5 2H13a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/></svg></button>
+          <button class="tool-btn" data-action="save" title="保存 (⌘S)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5h8l2.5 2.5v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1z"/><path d="M5.5 2.5v4h4v-4"/><rect x="5.5" y="10" width="5" height="3.5" rx=".5"/></svg></button>
         </div>
         <div class="toolbar-group" id="toolbar-edit">
-          <button class="tool-btn" data-action="undo" title="撤销 (⌘Z)">↶</button>
-          <button class="tool-btn" data-action="redo" title="重做 (⇧⌘Z)">↷</button>
+          <button class="tool-btn" data-action="undo" title="撤销 (⌘Z)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5h7.5a3.5 3.5 0 0 1 0 7H6.5"/><path d="M6.5 4 3 7.5 6.5 11"/></svg></button>
+          <button class="tool-btn" data-action="redo" title="重做 (⇧⌘Z)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12.5 7.5H5a3.5 3.5 0 0 0 0 7h4.5"/><path d="M9.5 4 13 7.5 9.5 11"/></svg></button>
         </div>
         <div class="toolbar-group" id="toolbar-search">
-          <button class="tool-btn" data-action="find" title="查找 (⌘F)">🔍</button>
-          <button class="tool-btn" data-action="replace" title="替换 (⇧⌘F)">🔁</button>
+          <button class="tool-btn" data-action="find" title="查找 (⌘F)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg></button>
+          <button class="tool-btn" data-action="replace" title="替换 (⇧⌘F)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4.5h8M9.5 2.5 11.5 4.5l-2 2"/><path d="M12.5 11.5h-8M6.5 9.5 4.5 11.5l2 2"/></svg></button>
         </div>
         <div class="toolbar-group" id="toolbar-hex">
-          <button class="tool-btn tool-toggle" id="btn-column" data-action="column" title="列模式">▦</button>
+          <button class="tool-btn tool-toggle" id="btn-column" data-action="column" title="列模式"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M2.5 8h11M8 3v10"/></svg></button>
           <button class="tool-btn" id="btn-mode" data-action="mode" title="切换文本/十六进制">0x16</button>
         </div>
         <div class="toolbar-group" id="toolbar-view">
-          <button class="tool-btn" data-action="tree" title="切换侧边栏">▤</button>
-          <button class="tool-btn" data-action="theme" title="切换主题">◐</button>
+          <button class="tool-btn" data-action="tree" title="切换侧边栏"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="4.5" height="10" rx="1"/><rect x="7.5" y="3" width="6.5" height="10" rx="1"/><path d="M9 5.5h3.5M9 8h3.5"/></svg></button>
+          <button class="tool-btn" data-action="theme" title="切换主题"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="3"/><path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.5 3.5l1 1M11.5 11.5l1 1M3.5 12.5l1-1M11.5 4.5l1-1"/></svg></button>
         </div>
       </nav>
 

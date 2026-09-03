@@ -208,6 +208,12 @@ body {
   justify-content: center;
 }
 
+.tool-btn svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
 .tool-btn:hover {
   background: var(--bg3);
 }
