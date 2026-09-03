@@ -466,6 +466,8 @@ export class App {
     }
     handle.addEventListener("pointerdown", (e) => {
       e.preventDefault();
+      // 拖动期间禁用 width 过渡，避免 0.12s 动画拖慢拖动跟手度
+      sb.classList.add("resizing");
       const startX = e.clientX;
       const startW = sb.getBoundingClientRect().width;
       const move = (ev: PointerEvent) => {
@@ -473,6 +475,7 @@ export class App {
         sb.style.width = w + "px";
       };
       const up = () => {
+        sb.classList.remove("resizing");
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
         try {

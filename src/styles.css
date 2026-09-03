@@ -237,6 +237,10 @@ body {
   transition: width 0.12s ease;
 }
 
+#sidebar.resizing {
+  transition: none;
+}
+
 #sb-toggle {
   position: absolute;
   top: 0;
