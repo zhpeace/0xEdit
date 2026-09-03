@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "UltraEdit Clone",
+        "title": "0xEdit",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
