@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231e88e5'/%3E%3Ctext x='16' y='22' font-size='18' font-family='sans-serif' fill='white' text-anchor='middle'%3EUE%3C/text%3E%3C/svg%3E" />
+    <title>UltraEdit Clone</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <div id="app">
+      <header id="menubar"></header>
+      <nav id="toolbar">
+        <div class="toolbar-group" id="toolbar-file">
+          <button class="tool-btn" data-action="new" title="新建 (⌘N)">＋</button>
+          <button class="tool-btn" data-action="open" title="打开文件 (⌘O)">🗀</button>
+          <button class="tool-btn" data-action="open-folder" title="打开文件夹">🗁</button>
+          <button class="tool-btn" data-action="save" title="保存 (⌘S)">💾</button>
+        </div>
+        <div class="toolbar-group" id="toolbar-edit">
+          <button class="tool-btn" data-action="undo" title="撤销 (⌘Z)">↶</button>
+          <button class="tool-btn" data-action="redo" title="重做 (⇧⌘Z)">↷</button>
+        </div>
+        <div class="toolbar-group" id="toolbar-search">
+          <button class="tool-btn" data-action="find" title="查找 (⌘F)">🔍</button>
+          <button class="tool-btn" data-action="replace" title="替换 (⇧⌘F)">🔁</button>
+        </div>
+        <div class="toolbar-group" id="toolbar-hex">
+          <button class="tool-btn tool-toggle" id="btn-column" data-action="column" title="列模式">▦</button>
+          <button class="tool-btn" id="btn-mode" data-action="mode" title="切换文本/十六进制">0x16</button>
+        </div>
+        <div class="toolbar-group" id="toolbar-view">
+          <button class="tool-btn" data-action="tree" title="切换侧边栏">▤</button>
+          <button class="tool-btn" data-action="theme" title="切换主题">◐</button>
+        </div>
+      </nav>
+
+      <div id="workspace">
+        <aside id="sidebar">
+          <div class="sb-resize-handle" title="拖拽调整宽度"></div>
+          <button id="sb-toggle" title="折叠/展开侧边栏 (⌘B)" aria-label="折叠侧边栏">‹</button>
+          <div id="sidebar-header">
+            <span class="sb-tab active" data-sb="local">本地</span>
+            <span class="sb-tab" data-sb="outline">大纲</span>
+            <span class="sb-tab" data-sb="search">搜索</span>
+            <span class="sb-tab" data-sb="remote">远程</span>
+          </div>
+          <div id="filetree"></div>
+          <div id="outline-panel" class="hidden"></div>
+          <div id="search-panel" class="hidden"></div>
+          <div id="remote-panel" class="hidden"></div>
+        </aside>
+
+        <section id="editor-area">
+          <div id="tabbar"></div>
+          <div id="editor-container">
+            <div id="main-panel"></div>
+            <div id="split-panel" class="hidden"></div>
+            <div id="preview-panel" class="hidden"></div>
+          </div>
+          <div id="hex-container" class="hidden"></div>
+          <div id="empty-state">
+            <div class="empty-inner">
+              <div class="empty-logo">UE</div>
+              <h2>UltraEdit Clone</h2>
+              <p>打开文件、编辑、十六进制查看，全部功能都在这里。</p>
+                <div class="empty-actions">
+                  <button class="primary" data-action="open">打开文件</button>
+                  <button data-action="open-folder">打开文件夹</button>
+                  <button data-action="new">新建文件</button>
+                </div>
+                <div class="empty-recent hidden" id="empty-recent"></div>
+              </div>
+          </div>
+        </section>
+      </div>
+
+      <footer id="statusbar">
+        <span id="status-path"></span>
+        <span class="spacer"></span>
+        <span id="status-encoding"></span>
+        <span id="status-lang"></span>
+        <span id="status-size"></span>
+        <span id="status-pos">Ln 1, Col 1</span>
+      </footer>
+
+      <div id="searchbar" class="hidden">
+        <div class="search-row">
+          <input id="search-input" type="text" placeholder="查找..." spellcheck="false" />
+          <button class="search-btn" id="search-prev" title="上一个 (⇧Enter)">▲</button>
+          <button class="search-btn" id="search-next" title="下一个 (Enter)">▼</button>
+          <label class="search-opt"><input type="checkbox" id="search-case" /><span id="lbl-case">区分大小写</span></label>
+          <label class="search-opt"><input type="checkbox" id="search-regex" /><span id="lbl-regex">正则</span></label>
+          <label class="search-opt"><input type="checkbox" id="search-word" /><span id="lbl-word">全词</span></label>
+          <label class="search-opt"><input type="checkbox" id="search-whole" /><span id="lbl-whole">循环</span></label>
+          <button class="search-btn" id="search-count" title="统计匹配数量">计数</button>
+          <button class="search-btn" id="search-bookmark" title="为所有匹配行添加书签">书签全部</button>
+          <button class="search-btn search-close" id="search-close" title="关闭 (Esc)">✕</button>
+        </div>
+        <div class="search-row hidden" id="replace-row">
+          <input id="replace-input" type="text" placeholder="替换为..." spellcheck="false" />
+          <button class="search-btn" id="replace-one">替换</button>
+          <button class="search-btn" id="replace-all">全部替换</button>
+          <button class="search-btn" id="replace-sel">选中替换</button>
+          <span id="search-status" class="search-status"></span>
+        </div>
+        <div class="search-status-line" id="search-status-line"></div>
+      </div>
+    </div>
+  </body>
+</html>
