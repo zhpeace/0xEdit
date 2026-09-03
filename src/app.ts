@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { open as dialogOpen, save as dialogSave } from "@tauri-apps/plugin-dialog";
+import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, dropCursor, highlightWhitespace } from "@codemirror/view";
 import { EditorState, Compartment } from "@codemirror/state";
 import {
@@ -1033,6 +1035,7 @@ export class App {
           ["清空最近文件", () => { clearRecent(); this.alert(t("已清空最近文件列表。")); }, ""],
     ],
     "帮助": () => [
+      ["检查更新…", () => this.checkForUpdate(), ""],
       ["关于", () => this.alert(t("about.text")), ""],
     ],
     "语言": () => [
@@ -1229,6 +1232,36 @@ export class App {
     modal.innerHTML = `<div class="modal"><div class="modal-title">${t("提示")}</div><div class="modal-body">${msg.replace(/\n/g, "<br/>")}</div><div class="modal-actions"><button class="primary modal-ok">${t("确定")}</button></div></div>`;
     modal.querySelector(".modal-ok")!.addEventListener("click", () => modal.remove());
     document.body.appendChild(modal);
+  }
+
+  // ---------------------------------------------------------------- update
+
+  private async checkForUpdate() {
+    try {
+      const update = await checkForUpdate();
+      if (!update) {
+        this.alert(t("update.none"));
+        return;
+      }
+      const ok = await this.confirmUpdate(t("update.found", { version: update.version }));
+      if (!ok) return;
+      this.alert(t("update.downloading"));
+      await update.downloadAndInstall();
+      await relaunch();
+    } catch (e) {
+      this.alert(t("update.error") + "\n" + String(e));
+    }
+  }
+
+  private confirmUpdate(msg: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const modal = document.createElement("div");
+      modal.className = "modal-mask";
+      modal.innerHTML = `<div class="modal"><div class="modal-title">${t("检查更新…")}</div><div class="modal-body">${msg.replace(/\n/g, "<br/>")}</div><div class="modal-actions"><button data-act="ok" class="primary">${t("确定")}</button><button data-act="cancel">${t("取消")}</button></div></div>`;
+      modal.querySelector('[data-act="ok"]')!.addEventListener("click", () => { modal.remove(); resolve(true); });
+      modal.querySelector('[data-act="cancel"]')!.addEventListener("click", () => { modal.remove(); resolve(false); });
+      document.body.appendChild(modal);
+    });
   }
 
   private confirmDirty(doc: Document): Promise<"save" | "discard" | "cancel"> {

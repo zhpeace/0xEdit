@@ -1238,6 +1238,8 @@ fn new_window(app: tauri::AppHandle) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(FtpState(Mutex::new(HashMap::new())))
         .manage(SshState(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![

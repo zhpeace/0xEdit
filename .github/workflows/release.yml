@@ -44,6 +44,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Tauri 更新签名私钥（无密码）：用于对更新包签名并生成 latest.json
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
           tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
           releaseName: '0xEdit ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}'
