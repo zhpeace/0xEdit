@@ -567,7 +567,7 @@ fn dirs_home() -> Option<String> {
 
 fn recovery_dir() -> String {
     let home = dirs_home().unwrap_or_else(|| ".".into());
-    format!("{home}/.ultraedit_clone_recovery")
+    format!("{home}/.0xedit_recovery")
 }
 
 fn recovery_file(key: &str) -> String {
@@ -1226,7 +1226,7 @@ fn new_window(app: tauri::AppHandle) -> Result<(), String> {
     let label = format!("win-{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
     WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
-        .title("UltraEdit Clone — 新窗口")
+        .title("0xEdit — 新窗口")
         .inner_size(1000.0, 720.0)
         .min_inner_size(700.0, 480.0)
         .build()

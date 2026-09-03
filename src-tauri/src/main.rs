@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    ultraedit_clone_lib::run()
+    ue_lib::run()
 }

@@ -1,4 +1,4 @@
-# UltraEdit Clone
+# 0xEdit
 
 一款基于 **Tauri 2 + CodeMirror 6** 的跨平台桌面文本编辑器，复刻经典 UltraEdit 的核心编辑体验与进阶功能，支持本地多标签编辑、FTP/SFTP 远程文件管理、文本转换工具箱、宏与脚本自动化等。
 

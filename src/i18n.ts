@@ -148,7 +148,7 @@ const EN: Record<string, string> = {
   "不保存": "Don't Save",
   "保存更改？": "Save changes?",
   "file.unsaved": "The file “{name}” has unsaved changes.",
-  "about.text": "UltraEdit Clone\n\nA cross-platform editor clone built with Tauri 2 + CodeMirror 6.",
+  "about.text": "0xEdit\n\nA cross-platform text & hex editor built with Tauri 2 + CodeMirror 6.",
   // 远程 / 账户管理器
   "管理账户…": "Manage Accounts…",
   "FTP 账户管理器": "FTP Account Manager",
@@ -702,7 +702,7 @@ const JA: Record<string, string> = {
   "不保存": "保存しない",
   "保存更改？": "変更を保存しますか？",
   "file.unsaved": "ファイル「{name}」は保存されていない変更があります。",
-  "about.text": "UltraEdit Clone\n\nTauri 2 + CodeMirror 6 ベースのクロスプラットフォームエディタクローン。",
+  "about.text": "0xEdit\n\nTauri 2 + CodeMirror 6 ベースのクロスプラットフォームテキスト／ヘックスエディタ。",
   "管理账户…": "アカウント管理…",
   "FTP 账户管理器": "FTP アカウント管理",
   "常规": "一般",

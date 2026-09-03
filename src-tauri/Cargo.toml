@@ -1,8 +1,9 @@
 [package]
-name = "ultraedit-clone"
+# Cargo 包名不允许以数字开头，故用 oxedit（发音与 0xEdit 一致）；显示名由 tauri.conf.json productName 控制。
+name = "oxedit"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "0xEdit — 跨平台桌面文本编辑器（Tauri 2 + CodeMirror 6）"
+authors = ["0xEdit contributors"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,7 +12,8 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "ultraedit_clone_lib"
+# 注：lib 名避免以数字开头（Rust crate 标识符限制），因此不用 0xedit_lib。
+name = "ue_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
