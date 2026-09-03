@@ -1,7 +1,7 @@
 [package]
 # Cargo 包名不允许以数字开头，故用 oxedit（发音与 0xEdit 一致）；显示名由 tauri.conf.json productName 控制。
 name = "oxedit"
-version = "0.2.0"
+version = "0.2.1"
 description = "0xEdit — 跨平台桌面文本编辑器（Tauri 2 + CodeMirror 6）"
 authors = ["0xEdit contributors"]
 edition = "2021"
