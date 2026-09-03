@@ -18,6 +18,12 @@ src-tauri/target/
 # Playwright MCP debug logs
 .playwright-mcp/
 
+# 打包产物（防止被误提交到非 target 位置）
+*.dmg
+*.app
+*.exe
+*.msi
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
