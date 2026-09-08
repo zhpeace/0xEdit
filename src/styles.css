@@ -497,9 +497,9 @@ body {
 }
 
 .ft-arrow {
-  width: 18px;
+  width: 22px;
   text-align: center;
-  font-size: 14px;
+  font-size: 18px;
   line-height: 1;
   color: var(--fg-dim);
   flex-shrink: 0;
