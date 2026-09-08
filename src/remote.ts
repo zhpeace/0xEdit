@@ -112,6 +112,7 @@ export class RemoteBrowser {
   private expanded = new Set<string>();
   private loading = new Set<string>();
   private selectedPath: string | null = null;
+  private ctxIsDir = false;
   private sites: RemoteSite[] = [];
   private curSiteId: string | null = null;
   private connectedSiteId: string | null = null;
@@ -185,6 +186,7 @@ export class RemoteBrowser {
       e.preventDefault();
       this.selectedPath = node.dataset.path || node.dataset.name!;
       const isDir = node.dataset.dir === "1";
+      this.ctxIsDir = isDir;
       (ctx.querySelector('[data-act="saveas"]') as HTMLElement).style.display = isDir ? "none" : "";
       (ctx.querySelector('[data-act="open"]') as HTMLElement).style.display = isDir ? "none" : "";
       ctx.style.left = `${e.clientX}px`;
@@ -1043,13 +1045,17 @@ export class RemoteBrowser {
     if (!name) return;
     try {
       if (this.isSftp()) {
-        await invoke("sftp_create_file", { id: this.id, path: join(this.path, name) });
+        const dir = this.ctxTargetDir();
+        if (!dir) return;
+        const full = join(dir, name);
+        await invoke("sftp_create_file", { id: this.id, path: full });
+        await this.refresh();
+        this.download(full);
       } else {
         await invoke("ftp_create_file", { id: this.id, name });
+        await this.refresh();
+        this.download(name);
       }
-      await this.refresh();
-      // 自动打开新文件，便于直接编辑
-      this.download(this.isSftp() ? join(this.path, name) : name);
     } catch (e) {
       this.status(t("失败: {e}", { e: String(e) }));
     }
@@ -1062,7 +1068,9 @@ export class RemoteBrowser {
     if (!name) return;
     try {
       if (this.isSftp()) {
-        await invoke("sftp_mkdir", { id: this.id, path: join(this.path, name) });
+        const dir = this.ctxTargetDir();
+        if (!dir) return;
+        await invoke("sftp_mkdir", { id: this.id, path: join(dir, name) });
       } else {
         await invoke("ftp_mkdir", { id: this.id, name });
       }
@@ -1070,6 +1078,14 @@ export class RemoteBrowser {
     } catch (e) {
       this.status(t("失败: {e}", { e: String(e) }));
     }
+  }
+
+  // 右键新建的目标目录：SFTP 下右键点是目录 → 其内部；是文件 → 其所在目录
+  private ctxTargetDir(): string | null {
+    if (!this.selectedPath) return null;
+    if (this.ctxIsDir) return this.selectedPath;
+    const idx = this.selectedPath.lastIndexOf("/");
+    return idx > 0 ? this.selectedPath.slice(0, idx) : "/";
   }
 
   // 通用输入对话框
