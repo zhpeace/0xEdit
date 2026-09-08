@@ -153,6 +153,9 @@ export class RemoteBrowser {
       <div class="ft-path" id="ftp-path"></div>
       <div id="ftp-tree" class="ft-dir"></div>
       <div id="ftp-ctx" class="ctx-menu hidden">
+        <div class="ctx-item" data-act="newfile">${t("新建文件")}</div>
+        <div class="ctx-item" data-act="newdir">${t("新建文件夹")}</div>
+        <div class="ctx-sep"></div>
         <div class="ctx-item" data-act="open">${t("打开")}</div>
         <div class="ctx-item" data-act="saveas">${t("下载到本地…")}</div>
         <div class="ctx-item" data-act="rename">${t("重命名")}</div>
@@ -192,6 +195,8 @@ export class RemoteBrowser {
       item.addEventListener("click", () => {
         ctx.classList.add("hidden");
         const act = item.dataset.act!;
+        if (act === "newfile") { this.ctxNewFile(); return; }
+        if (act === "newdir") { this.ctxNewDir(); return; }
         if (!this.selectedPath) return;
         if (act === "open") this.download(this.selectedPath);
         else if (act === "saveas") this.saveAs(this.selectedPath);
@@ -247,6 +252,10 @@ export class RemoteBrowser {
     if (opt) opt.textContent = t("— 选择账户 —");
     const ctxOpen = this.el.querySelector('#ftp-ctx [data-act="open"]');
     if (ctxOpen) ctxOpen.textContent = t("打开");
+    const ctxNewFile = this.el.querySelector('#ftp-ctx [data-act="newfile"]');
+    if (ctxNewFile) ctxNewFile.textContent = t("新建文件");
+    const ctxNewDir = this.el.querySelector('#ftp-ctx [data-act="newdir"]');
+    if (ctxNewDir) ctxNewDir.textContent = t("新建文件夹");
     const ctxSave = this.el.querySelector('#ftp-ctx [data-act="saveas"]');
     if (ctxSave) ctxSave.textContent = t("下载到本地…");
     const ctxRen = this.el.querySelector('#ftp-ctx [data-act="rename"]');
@@ -1025,6 +1034,77 @@ export class RemoteBrowser {
     } catch (e) {
       this.status(t("失败: {e}", { e: String(e) }));
     }
+  }
+
+  // 右键菜单：在当前目录新建文件
+  private async ctxNewFile() {
+    if (!this.id) return;
+    const name = await this.promptRemoteInput(t("新建文件"), t("文件名"));
+    if (!name) return;
+    try {
+      if (this.isSftp()) {
+        await invoke("sftp_create_file", { id: this.id, path: join(this.path, name) });
+      } else {
+        await invoke("ftp_create_file", { id: this.id, name });
+      }
+      await this.refresh();
+      // 自动打开新文件，便于直接编辑
+      this.download(this.isSftp() ? join(this.path, name) : name);
+    } catch (e) {
+      this.status(t("失败: {e}", { e: String(e) }));
+    }
+  }
+
+  // 右键菜单：在当前目录新建文件夹
+  private async ctxNewDir() {
+    if (!this.id) return;
+    const name = await this.promptRemoteInput(t("新建文件夹"), t("文件夹名称"));
+    if (!name) return;
+    try {
+      if (this.isSftp()) {
+        await invoke("sftp_mkdir", { id: this.id, path: join(this.path, name) });
+      } else {
+        await invoke("ftp_mkdir", { id: this.id, name });
+      }
+      await this.refresh();
+    } catch (e) {
+      this.status(t("失败: {e}", { e: String(e) }));
+    }
+  }
+
+  // 通用输入对话框
+  private promptRemoteInput(title: string, placeholder: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      const mask = document.createElement("div");
+      mask.className = "modal-mask";
+      mask.innerHTML = `<div class="modal" style="min-width:320px;">
+        <div class="modal-title">${escapeHtml(title)}</div>
+        <div class="modal-body">
+          <input id="ctx-name-input" class="fs-input" placeholder="${escapeHtml(placeholder)}" autofocus spellcheck="false"/>
+        </div>
+        <div class="modal-actions">
+          <button class="search-btn" id="ctx-name-ok">${t("创建")}</button>
+          <button class="search-btn" id="ctx-name-cancel">${t("取消")}</button>
+        </div>
+      </div>`;
+      document.body.appendChild(mask);
+      const input = mask.querySelector("#ctx-name-input") as HTMLInputElement;
+      const close = (v: string | null) => {
+        mask.remove();
+        resolve(v);
+      };
+      const ok = () => close(input.value.trim() || null);
+      mask.querySelector("#ctx-name-ok")!.addEventListener("click", ok);
+      mask.querySelector("#ctx-name-cancel")!.addEventListener("click", () => close(null));
+      mask.addEventListener("click", (e) => {
+        if (e.target === mask) close(null);
+      });
+      input.focus();
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") ok();
+        if (e.key === "Escape") close(null);
+      });
+    });
   }
 
   private async delSelected() {

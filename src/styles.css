@@ -2179,6 +2179,11 @@ button.primary,
   color: var(--menu-fg, #222);
 }
 .ctx-item:hover { background: #2f6fd6; color: #fff; }
+.ctx-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border, #d0d0d0);
+}
 .ctx-danger { color: #c0392b; }
 .ctx-danger:hover { background: #c0392b; color: #fff; }
 

@@ -795,6 +795,16 @@ fn ftp_mkdir(id: String, name: String, state: tauri::State<FtpState>) -> Result<
 }
 
 #[tauri::command]
+fn ftp_create_file(id: String, name: String, state: tauri::State<FtpState>) -> Result<String, String> {
+    with_ftp(&id, &state, |ftp| {
+        let mut empty = std::io::Cursor::new(Vec::<u8>::new());
+        let pwd = ftp.pwd()?;
+        ftp.put(&name, &mut empty)?;
+        Ok(pwd)
+    })
+}
+
+#[tauri::command]
 fn copy_file(src: String, dst: String) -> Result<(), String> {
     if let Some(dir) = Path::new(&dst).parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -1021,6 +1031,15 @@ fn sftp_mkdir(id: String, path: String, state: tauri::State<SshState>) -> Result
     with_ssh(&id, &state, |ses| {
         let sftp = ses.sftp().map_err(|e| e.to_string())?;
         sftp.mkdir(std::path::Path::new(&path), 0o755).map_err(|e| e.to_string())
+    })
+}
+
+#[tauri::command]
+fn sftp_create_file(id: String, path: String, state: tauri::State<SshState>) -> Result<(), String> {
+    with_ssh(&id, &state, |ses| {
+        let sftp = ses.sftp().map_err(|e| e.to_string())?;
+        let _file = sftp.create(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
+        Ok(())
     })
 }
 
@@ -1261,6 +1280,7 @@ pub fn run() {
             ftp_upload,
             ftp_download,
             ftp_mkdir,
+            ftp_create_file,
             ftp_delete,
             sftp_connect,
             sftp_disconnect,
@@ -1268,6 +1288,7 @@ pub fn run() {
             sftp_download,
             sftp_upload,
             sftp_mkdir,
+            sftp_create_file,
             sftp_delete,
             sftp_rename,
             sftp_save_as,
