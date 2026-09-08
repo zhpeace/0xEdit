@@ -767,6 +767,7 @@ export class RemoteBrowser {
         frag.appendChild(this.node(e.name, e.is_dir, e.size, full));
       }
       tree.appendChild(frag);
+      if (this.isSftp()) await this.expandFrom(tree);
       this.status(t("已连接 · {n} 项", { n: res.entries.length }));
     } catch (e) {
       this.status(t("读取失败: {e}", { e: String(e) }));
@@ -800,12 +801,18 @@ export class RemoteBrowser {
     this.expanded.add(path);
     elm.classList.add("expanded");
     arrow.textContent = "▾";
+    await this.loadChildren(elm);
+  }
+
+  // 加载某目录的子节点（展开 / 恢复展开共用）
+  private async loadChildren(elm: HTMLElement): Promise<void> {
+    const path = elm.dataset.path!;
+    if (this.loading.has(path)) return;
+    this.loading.add(path);
     const box = document.createElement("div");
     box.className = "ft-children";
     box.innerHTML = `<div class="ft-loading">${t("读取中…")}</div>`;
     elm.after(box);
-    if (this.loading.has(path)) return;
-    this.loading.add(path);
     try {
       const res = await invoke<FtpListResult>("sftp_list", { id: this.id, path });
       box.innerHTML = "";
@@ -818,6 +825,21 @@ export class RemoteBrowser {
       box.innerHTML = `<div class="ft-loading">${t("失败: {e}", { e: String(e) })}</div>`;
     } finally {
       this.loading.delete(path);
+    }
+  }
+
+  // 递归恢复 expanded 集合中已展开的目录（refresh 重绘后调用）
+  private async expandFrom(container: HTMLElement): Promise<void> {
+    const dirs = Array.from(container.querySelectorAll<HTMLElement>(".ft-dir"));
+    for (const elm of dirs) {
+      const path = elm.dataset.path;
+      if (!path || !this.expanded.has(path)) continue;
+      elm.classList.add("expanded");
+      const arrow = elm.querySelector<HTMLElement>(".ft-arrow");
+      if (arrow) arrow.textContent = "▾";
+      await this.loadChildren(elm);
+      const box = elm.nextElementSibling;
+      if (box && box.classList.contains("ft-children")) await this.expandFrom(box as HTMLElement);
     }
   }
 
