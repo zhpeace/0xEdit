@@ -1,9 +1,12 @@
 name: release
 
-# 自动发布：推送 v* tag 时构建并创建 GitHub Release（附安装包）
-# 也可手动触发：workflow_dispatch 时若填了 tag_name 则发布到该 tag，留空则只构建不发布
+# 全平台打包（macOS / Windows / Linux）：
+# - 推送 main 分支 → 三平台构建，上传安装包 artifacts（不发布）
+# - 推送 v* tag → 三平台构建并创建 GitHub Release（附安装包）
+# - 手动触发：填 tag_name 则发布到该 tag，留空则只构建不发布
 on:
   push:
+    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
@@ -15,8 +18,12 @@ on:
 
 jobs:
   release:
-    name: Build & Publish
-    runs-on: macos-latest
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     steps:
@@ -32,6 +39,12 @@ jobs:
         with:
           workspaces: ./src-tauri -> target
 
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -40,7 +53,8 @@ jobs:
           npm run test:unit
           npm run build
 
-      - name: Build & create GitHub Release
+      # tagName 为空（main 推送/手动留空）→ 只构建并上传 artifacts，不创建 Release
+      - name: Build & create GitHub Release (all platforms)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -48,12 +62,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
-          tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
-          releaseName: "0xEdit ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}"
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name }}
+          releaseName: "0xEdit ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name }}"
           releaseBody: |
-            ## 0xEdit ${{ github.event_name == 'push' && github.ref_name || inputs.tag_name }}
+            ## 0xEdit ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name }}
 
-            由 GitHub Actions 自动构建发布。功能说明与安装指引请查看仓库 README。
+            由 GitHub Actions 自动构建发布（macOS / Windows / Linux）。功能说明与安装指引请查看仓库 README。
 
             > macOS 安装包未签名，首次打开如遇系统提示，请右键图标 → 打开。
           releaseDraft: false

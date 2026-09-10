@@ -8,6 +8,13 @@ export interface RemoteRef {
   path: string;
 }
 
+export interface ArchiveRef {
+  kind: string; // "tar" | "tar.gz" | "tar.bz2" | "zip"
+  entry: string; // 归档内条目路径
+  tmpPath: string; // 已下载归档的本地路径
+  archiveName: string; // 原归档文件名（FTP 回写需同名）
+}
+
 export interface Document {
   id: string;
   path: string;
@@ -17,6 +24,7 @@ export interface Document {
   isBinary: boolean;
   mode: DocMode;
   dirty: boolean;
+  savedContent?: string;
   state?: EditorState;
   hexBytes?: Uint8Array;
   hexDirty?: boolean;
@@ -26,6 +34,7 @@ export interface Document {
   wrap?: boolean;
   showWs?: boolean;
   remote?: RemoteRef;
+  archive?: ArchiveRef;
 }
 
 export interface FileEntry {
@@ -33,4 +42,5 @@ export interface FileEntry {
   path: string;
   is_dir: boolean;
   size: number;
+  modified?: number;
 }

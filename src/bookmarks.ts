@@ -123,3 +123,16 @@ export function bookmarkLines(view: EditorView, positions: number[]): boolean {
   });
   return true;
 }
+
+// 供书签面板等外部读取：返回书签所在的行号（升序）
+export function getBookmarkLines(state: import("@codemirror/state").EditorState): number[] {
+  try {
+    const positions = state.field(bookmarkPositions);
+    return positions
+      .filter((p) => p >= 0 && p <= state.doc.length)
+      .map((p) => state.doc.lineAt(Math.min(p, state.doc.length)).number)
+      .sort((a, b) => a - b);
+  } catch {
+    return [];
+  }
+}

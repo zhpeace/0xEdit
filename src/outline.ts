@@ -3,7 +3,7 @@ import { t } from "./i18n";
 export interface Symbol {
   name: string;
   line: number;
-  kind: "class" | "func" | "struct" | "var";
+  kind: "class" | "func" | "struct" | "var" | "heading";
   depth: number;
 }
 
@@ -12,6 +12,21 @@ function symbolForText(path: string, text: string): Symbol[] {
   const out: Symbol[] = [];
   const lines = text.split("\n");
   const patterns: Array<{ re: RegExp; kind: Symbol["kind"] }> = [];
+
+  if (["md", "markdown", "mdown", "mkd", "mdx"].includes(ext)) {
+    // Markdown 标题（ATX：# 级；及 setext：下一行 === / --- 视为 H1/H2）
+    const mdHeading = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/;
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(mdHeading);
+      if (m) {
+        out.push({ name: m[2], line: i + 1, kind: "heading", depth: m[1].length - 1 });
+      } else if (i > 0 && /^\s*(={3,}|-{3,})\s*$/.test(lines[i]) && lines[i - 1].trim()) {
+        const name = lines[i - 1].trim().replace(/^#{1,6}\s+/, "");
+        out.push({ name, line: i, kind: "heading", depth: /={3,}/.test(lines[i]) ? 0 : 1 });
+      }
+    }
+    return out;
+  }
 
   if (["js", "jsx", "ts", "tsx", "mjs", "cjs", "vue"].includes(ext)) {
     patterns.push(
@@ -98,7 +113,7 @@ export class Outline {
       row.style.paddingLeft = `${10 + s.depth * 14}px`;
       const kind = document.createElement("span");
       kind.className = `outline-kind ${s.kind}`;
-      kind.textContent = s.kind === "func" ? "ƒ" : s.kind === "class" ? "⌘" : s.kind === "struct" ? "▧" : "◆";
+      kind.textContent = s.kind === "func" ? "ƒ" : s.kind === "class" ? "⌘" : s.kind === "struct" ? "▧" : s.kind === "heading" ? "¶" : "◆";
       const name = document.createElement("span");
       name.className = "outline-name";
       name.textContent = s.name;

@@ -30,7 +30,7 @@ interface EditorLike {
 }
 
 export class MarkdownPreview {
-  onClose: (() => void) | null = null;
+  onTaskToggle: ((line: number, checked: boolean) => void) | null = null;
   private panel: HTMLElement;
   private content: HTMLElement;
   private view: EditorLike | null = null;
@@ -38,20 +38,31 @@ export class MarkdownPreview {
   private edHandler: (() => void) | null = null;
   private pvHandler: (() => void) | null = null;
 
-  constructor(panel: HTMLElement, closeTitle = "Close preview") {
+  constructor(panel: HTMLElement) {
     this.panel = panel;
     panel.classList.add("markdown-preview");
-    panel.innerHTML =
-      `<div id="pv-head"><span id="pv-name"></span>` +
-      `<button id="pv-close" title="${closeTitle}">✕</button></div>` +
-      `<div id="pv-body"></div>`;
+    // 无头部条：预览内容与左栏编辑器从同一水平线开始（关闭预览用 ⇧⌘E/菜单/工具栏）
+    panel.innerHTML = `<div id="pv-body"></div>`;
     this.content = panel.querySelector("#pv-body")!;
-    panel.querySelector("#pv-close")!.addEventListener("click", () => this.onClose && this.onClose());
   }
 
-  show(src: string, name: string) {
-    (this.panel.querySelector("#pv-name") as HTMLElement).textContent = name;
+  show(src: string) {
     this.content.innerHTML = renderMarkdown(src);
+    // 任务列表勾选闭环：源文本中的任务行按顺序对应预览里的 checkbox，点击回写编辑区
+    const taskLines: number[] = [];
+    src.split("\n").forEach((l, i) => {
+      if (/^\s*[-*]\s*\[[ xX]\]/.test(l)) taskLines.push(i + 1);
+    });
+    if (taskLines.length) {
+      const boxes = this.content.querySelectorAll<HTMLInputElement>("li input[type=checkbox]");
+      boxes.forEach((box, i) => {
+        const line = taskLines[i];
+        if (!line) return;
+        box.disabled = false;
+        box.removeAttribute("disabled");
+        box.addEventListener("change", () => this.onTaskToggle?.(line, box.checked));
+      });
+    }
     this.content.scrollTop = 0;
   }
 
@@ -62,6 +73,12 @@ export class MarkdownPreview {
     this.pvHandler = () => this.syncToEditor();
     view.scrollDOM.addEventListener("scroll", this.edHandler);
     this.content.addEventListener("scroll", this.pvHandler);
+  }
+
+  // 光标位置 → 预览按行比例跟随（覆盖仅滚动不触发的场景，如光标跳回顶部）
+  syncCursor(line: number, total: number) {
+    const r = total > 1 ? (line - 1) / (total - 1) : 0;
+    if (!this.syncing) this.setRatio(this.content, r);
   }
 
   private ratio(el: HTMLElement): number {

@@ -10,23 +10,26 @@ import {
   defaultKeymap, historyKeymap, history, undo, redo, insertTab, insertNewlineAndIndent, indentMore, indentLess,
   copyLineDown, deleteLine, moveLineUp, moveLineDown, toggleComment, addCursorAbove, addCursorBelow,
 } from "@codemirror/commands";
-import { defaultHighlightStyle, bracketMatching, syntaxHighlighting, indentOnInput, foldGutter, foldKeymap } from "@codemirror/language";
+import { defaultHighlightStyle, bracketMatching, syntaxHighlighting, indentOnInput, foldGutter, foldKeymap, HighlightStyle } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from "@codemirror/autocomplete";
 import { highlightSelectionMatches, search, findNext, findPrevious, selectMatches, RegExpCursor } from "@codemirror/search";
-import type { Document } from "./types";
+import type { Document, FileEntry } from "./types";
 import { langForPath } from "./langs";
 import { rectangleSelection, setColumnMode, isColumnMode } from "./rect";
 import { HexEditor, formatSize } from "./hex";
 import { FindBar, searchHighlight } from "./find";
 import { FileTree } from "./filetree";
-import { bookmarks, toggleBookmark, nextBookmark, prevBookmark, clearAllBookmarks } from "./bookmarks";
+import { bookmarks, toggleBookmark, nextBookmark, prevBookmark, clearAllBookmarks, getBookmarkLines } from "./bookmarks";
 import { editPositionListener, jumpBack, jumpForward } from "./jumplist";
 import { sortSelection, titleCaseSelection, joinLines, upperCaseCmd, lowerCaseCmd, toggleCaseCmd, insertNumberSequence, convertLineEndings, lineEndingLabel, rewrapLines, type LineEnding } from "./editops";
 import { getRecent, addRecent, clearRecent } from "./recent";
 import { FileSearch } from "./filesearch";
 import { CommandPalette, type CommandEntry } from "./palette";
-import { macroExtension, toggleRecordMacro, clearMacro, runMacro, macroManagerDialog } from "./macro";
+import { QuickOpen, type QuickOpenFile } from "./quickopen";
+import { RemoteTerm, type TermParams } from "./term";
+import { macroExtension, toggleRecordMacro, clearMacro, runMacro, macroManagerDialog, isRecording } from "./macro";
 import { showDiffDialog, type DiffDocRef } from "./diff";
 import { showScriptDialog } from "./script";
 import { MarkdownPreview, isMarkdownDoc, renderMarkdown } from "./markdown-preview";
@@ -37,8 +40,9 @@ import { showBigViewer } from "./bigview";
 import { snippetCompletionSource, snippetManagerDialog } from "./snippets";
 import { spellCheckDialog } from "./spellcheck";
 import { kwSourceFor } from "./kwcomplete";
-import { RemoteBrowser } from "./remote";
+import { RemoteBrowser , newTransferId } from "./remote";
 import { Outline } from "./outline";
+import { TileCell, TerminalTileCell } from "./tile";
 import { t, setLang, getLang, onLangChange } from "./i18n";
 import {
   formatJson, minifyJson, formatHtml, formatXml, base64Encode, base64Decode, urlEncode, urlDecode,
@@ -134,6 +138,32 @@ function highlightRanges(text: string, ranges: Array<[number, number]>): string 
   return html;
 }
 
+// 深色主题专用语法高亮配色（VS Code Dark+ 风格），解决 defaultHighlightStyle 浅色配色在深色背景几乎不可见的问题
+const DARK_HIGHLIGHT = HighlightStyle.define([
+  { tag: [tags.keyword, tags.modifier, tags.moduleKeyword], color: "#569cd6" },
+  { tag: [tags.string, tags.special(tags.string), tags.docString], color: "#ce9178" },
+  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: "#b5cea8" },
+  { tag: [tags.comment, tags.lineComment, tags.blockComment], color: "#6a9955", fontStyle: "italic" },
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.macroName], color: "#dcdcaa" },
+  { tag: [tags.typeName, tags.className, tags.namespace], color: "#4ec9b0" },
+  { tag: [tags.variableName, tags.propertyName, tags.attributeName, tags.definition(tags.variableName)], color: "#9cdcfe" },
+  { tag: [tags.tagName], color: "#569cd6" },
+  { tag: [tags.attributeValue], color: "#ce9178" },
+  { tag: [tags.operator, tags.punctuation, tags.bracket], color: "#d4d4d4" },
+  { tag: [tags.meta, tags.processingInstruction], color: "#d4d4d4" },
+  { tag: [tags.regexp], color: "#d16969" },
+  { tag: [tags.labelName], color: "#dcdcaa" },
+  { tag: [tags.invalid], color: "#f44747" },
+  // Markdown 专属配色
+  { tag: [tags.heading], color: "#4ec9b0", fontWeight: "bold" },
+  { tag: [tags.strong], color: "#569cd6", fontWeight: "bold" },
+  { tag: [tags.emphasis], color: "#dcdcaa", fontStyle: "italic" },
+  { tag: [tags.link, tags.url], color: "#6cb6ff", textDecoration: "underline" },
+  { tag: [tags.quote], color: "#6a9955", fontStyle: "italic" },
+  { tag: [tags.monospace], color: "#ce9178" },
+  { tag: [tags.list], color: "#d4d4d4" },
+]);
+
 function themeBase(): import("@codemirror/state").Extension {
   return EditorView.theme(
     {
@@ -177,13 +207,28 @@ function isDarkTheme(id: string): boolean {
   return DARK_THEMES.has(id);
 }
 
+// 按当前主题深浅选择语法高亮配色：深色用 DARK_HIGHLIGHT，浅色用 CodeMirror 默认
+function highlightForTheme(): import("@codemirror/state").Extension {
+  const cur = localStorage.getItem("uec.theme") || "default-dark";
+  return syntaxHighlighting(isDarkTheme(cur) ? DARK_HIGHLIGHT : defaultHighlightStyle);
+}
+
+type MenuEntry = [string, () => void, string?] | [string, () => void, string, boolean | (() => boolean)];
+
 export class App {
   private view: EditorView | null = null;
   private docs = new Map<string, Document>();
   private tabOrder: string[] = [];
   private activeId: string | null = null;
+  private terms = new Map<string, RemoteTerm>();
+  private dirtyTimers = new Map<string, number>();
+  private termSite = new Map<string, string>(); // 终端标签 → 远程服务器会话 siteId
+  private termOrder: string[] = [];
+  private activeTermId: string | null = null;
+  private termArea: HTMLElement;
   private editorEl: HTMLElement;
   private mainPanel: HTMLElement;
+  private mdToolbarEl: HTMLElement;
   private splitPanel: HTMLElement;
   private previewPanel!: HTMLElement;
   private preview: MarkdownPreview | null = null;
@@ -193,7 +238,15 @@ export class App {
   private prefPreview = false;
   private previewTimer: any = null;
   private splitView: EditorView | null = null;
+  private syntaxCompartment = new Compartment();
   private splitDocId: string | null = null;
+  // 分屏双向同步防循环标志（左侧↔右侧）
+  private splitSyncing = false;
+  // 多标签平铺（SecureCRT Tile 风格）
+  private tileMode: "v" | "h" | null = null;
+  private tileCells = new Map<string, TileCell>();
+  private termTileCells = new Map<string, TerminalTileCell>();
+  private tileArea: HTMLElement;
   private hexEl: HTMLElement;
   private tabbarEl: HTMLElement;
   private emptyStateEl: HTMLElement;
@@ -201,10 +254,19 @@ export class App {
   private hex: HexEditor;
   private find: FindBar;
   private tree: FileTree;
+  private remote: RemoteBrowser;
+  private showHidden = (() => {
+    try {
+      return localStorage.getItem("0xedit.showHidden") === "1";
+    } catch {
+      return false;
+    }
+  })();
   private hexRoot: HTMLElement;
   private searchDir = "";
   private fileSearch: FileSearch;
   private palette: CommandPalette;
+  private quickOpen: QuickOpen;
   private outline: Outline;
   private searchItems: Array<{ path: string; line: number; content: string }> = [];
   private autosave = false;
@@ -213,10 +275,23 @@ export class App {
   constructor() {
     this.editorEl = document.getElementById("editor-container")!;
     this.mainPanel = document.getElementById("main-panel")!;
+    this.mdToolbarEl = document.getElementById("md-toolbar")!;
     this.splitPanel = document.getElementById("split-panel")!;
     this.previewPanel = document.getElementById("preview-panel")!;
     this.hexEl = document.getElementById("hex-container")!;
+    this.termArea = document.getElementById("term-area")!;
+    this.tileArea = document.getElementById("tile-area")!;
     this.tabbarEl = document.getElementById("tabbar")!;
+    const moreBtn = document.getElementById("tab-more");
+    if (moreBtn) moreBtn.addEventListener("click", () => this.openTabMoreMenu());
+    this.tabbarEl.addEventListener("wheel", (e) => {
+      const dx = Math.abs(e.deltaX);
+      const dy = Math.abs(e.deltaY);
+      if (dy > dx && this.tabbarEl.scrollWidth > this.tabbarEl.clientWidth) {
+        this.tabbarEl.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }
+    }, { passive: false });
     this.emptyStateEl = document.getElementById("empty-state")!;
     this.hexRoot = this.hexEl;
     this.statusEls = {
@@ -230,6 +305,9 @@ export class App {
     this.hex.onCursorCb = (o) => {
       this.statusEls.pos.textContent = `${t("偏移")} ${o.toString(16).toUpperCase()}`;
     };
+    // 状态栏编码可点击：参考 UltraEdit 状态栏编码下拉，按选择字符集重新解码查看
+    this.statusEls.encoding.classList.add("clickable");
+    this.statusEls.encoding.addEventListener("click", () => this.reopenAsDialog());
     this.fileSearch = new FileSearch(
       (p, l) => this.openFileAtLine(p, l),
       (items) => {
@@ -238,20 +316,32 @@ export class App {
       },
     );
     this.palette = new CommandPalette();
+    this.quickOpen = new QuickOpen();
     this.outline = new Outline(document.getElementById("outline-panel")!, (line) => this.gotoLineInActive(line));
     this.outline.bind();
-    new RemoteBrowser(
+    this.remote = new RemoteBrowser(
       document.getElementById("remote-panel")!,
       (tmp, proto, id, remotePath) => this.openRemoteDoc(tmp, proto, id, remotePath),
       () => this.active?.path ?? "",
+      (tmp, kind, entry, archiveName, proto, id, remotePath) =>
+        this.openArchiveDoc(tmp, kind, entry, archiveName, proto, id, remotePath),
+      this.showHidden,
+      (params, initialDir, siteId) => this.openTerminal(params, initialDir, siteId),
+      (siteId) => this.closeTermsBySite(siteId),
     );
     this.bindSidebarTabs();
+    this.bindHiddenToggle();
+    this.bindRefreshButtons();
     this.bindSidebarResize();
     this.restoreSidebarCollapsed();
-    document.getElementById("sb-toggle")?.addEventListener("click", () => this.toggleSidebar());
-    this.find = new FindBar(document.getElementById("searchbar")!, () => this.view);
-    this.tree = new FileTree(document.getElementById("filetree")!, (p) => this.openFile(p));
+    this.find = new FindBar(document.getElementById("searchbar")!, () => this.curView);
+    this.tree = new FileTree(document.getElementById("filetree")!, (p) => this.openFile(p), (p, kind, entry, name) =>
+      this.openArchiveDoc(p, kind, entry, name), this.showHidden);
     this.hexRoot = this.hexEl;
+    // 窗口重新获得焦点时刷新本地目录树（覆盖 Finder/终端等外部改动后切回的场景）
+    getCurrentWindow().onFocusChanged(({ payload }) => {
+      if (payload) this.tree?.refresh();
+    });
   }
 
   init() {
@@ -272,6 +362,16 @@ export class App {
     this.bindToolbar();
     this.bindGlobalKeys();
     this.bindDrop();
+    // 全局右键：阻止 macOS WKWebView 系统原生菜单；编辑区弹自定义菜单
+    window.addEventListener(
+      "contextmenu",
+      (e) => {
+        e.preventDefault();
+        const t = e.target as HTMLElement | null;
+        if (t?.closest?.(".cm-editor")) this.showEditorCtxMenu(e);
+      },
+      true
+    );
     this.bindCloseHook();
     this.newDoc();
     this.loadHome();
@@ -282,32 +382,38 @@ export class App {
   private bindCloseHook() {
     this.saveSessionSoon();
     try {
+      let allowClose = false;
       getCurrentWindow().onCloseRequested(async (event) => {
-        this.saveSessionNow();
+        // 二次关闭（保存完成后的 close() 重入）直接放行默认关闭，避免死循环
+        if (allowClose) return;
+        try {
+          this.saveSessionNow();
+        } catch {
+          /* ignore */
+        }
         const dirty = [...this.docs.values()].filter((d) => d.dirty);
         if (!dirty.length) return;
         event.preventDefault();
-        let saved = 0;
+        // 逐个提示（UltraEdit 行为）：每个未保存文件独立选择 保存/不保存/取消
         for (const d of dirty) {
-          try {
-            if (d.path && d.state) {
-              const ok = await this.saveDocument(d);
-              if (ok) saved++;
-            } else if (d.state) {
-              await invoke("write_recovery", { key: d.id, name: d.name, text: d.state.doc.toString() }).catch(() => {});
-              saved++;
-            }
-          } catch {
-            /* ignore */
+          const choice = await this.confirmDirty(d);
+          if (choice === "cancel") return;
+          if (choice === "save") {
+            const ok = await this.saveDocWithDialog(d);
+            if (!ok) return; // 另存为被取消 → 中止关闭
           }
         }
-        window.setTimeout(() => {
+        allowClose = true;
+        try {
+          // 再次请求关闭：回调重入后 allowClose 放行，走原生默认关闭
+          await getCurrentWindow().close();
+        } catch {
           try {
             getCurrentWindow().destroy();
           } catch {
             window.close();
           }
-        }, 30);
+        }
       });
     } catch {
       /* not in tauri */
@@ -316,10 +422,23 @@ export class App {
 
   private saveSessionNow() {
     try {
-      const paths = [...this.docs.values()]
-        .filter((d) => d.path && !d.isBinary && !d.remote)
-        .map((d) => d.path);
+      const paths: string[] = [];
+      const pos: Record<string, { line: number; ch: number }> = {};
+      for (const d of this.docs.values()) {
+        if (!d.path || d.isBinary || d.remote) continue;
+        paths.push(d.path);
+        if (d.state) {
+          try {
+            const head = d.state.selection.main.head;
+            const ln = d.state.doc.lineAt(Math.min(head, d.state.doc.length));
+            pos[d.path] = { line: ln.number, ch: head - ln.from };
+          } catch {
+            /* ignore */
+          }
+        }
+      }
       localStorage.setItem("uec.session.paths", JSON.stringify(paths));
+      localStorage.setItem("uec.session.pos", JSON.stringify(pos));
     } catch {
       /* ignore */
     }
@@ -335,15 +454,36 @@ export class App {
       if (!raw) return;
       const paths = JSON.parse(raw) as string[];
       if (!Array.isArray(paths)) return;
+      let savedPos: Record<string, { line: number; ch: number }> = {};
+      try {
+        savedPos = JSON.parse(localStorage.getItem("uec.session.pos") || "{}");
+      } catch {
+        /* ignore */
+      }
       for (const p of paths.slice(0, 8)) {
         await this.openFile(p).catch(() => {});
+        const s = savedPos[p];
+        const v = this.curView;
+        const doc = this.active;
+        if (s && v && doc && doc.path === p && doc.mode === "text" && !doc.isBinary) {
+          try {
+            const ln = v.state.doc.line(Math.max(1, Math.min(s.line, v.state.doc.lines)));
+            const ch = Math.min(s.ch, ln.length);
+            v.dispatch({
+              selection: { anchor: ln.from + ch },
+              effects: [EditorView.scrollIntoView(ln.from + ch, { y: "center" })],
+            });
+          } catch {
+            /* ignore */
+          }
+        }
       }
       if (paths.length > 8) {
         this.statusEls.pos.textContent = t("已恢复标签，其余 {n} 个未打开", { n: paths.length - 8 });
       }
       if (this.prefPreview) {
         const d = this.active;
-        if (d && d.mode !== "hex" && isMarkdownDoc(d.path, d.name)) this.openPreview();
+        if (d && d.mode !== "hex" && isMarkdownDoc(this.docLangPath(d), d.name)) this.openPreview();
       }
     } catch {
       /* ignore */
@@ -460,7 +600,7 @@ export class App {
     if (!handle) return;
     try {
       const saved = parseInt(localStorage.getItem("uec.sidebar.w") || "", 10);
-      if (saved > 0) sb.style.width = saved + "px";
+      if (saved > 0) sb.style.width = Math.min(saved, window.innerWidth * 0.5) + "px";
     } catch {
       /* ignore */
     }
@@ -471,7 +611,8 @@ export class App {
       const startX = e.clientX;
       const startW = sb.getBoundingClientRect().width;
       const move = (ev: PointerEvent) => {
-        const w = Math.max(140, Math.min(560, startW + (ev.clientX - startX)));
+        // 上限：窗口宽度的 50%（Finder 侧栏式），下限 140px
+        const w = Math.max(140, Math.min(window.innerWidth * 0.5, startW + (ev.clientX - startX)));
         sb.style.width = w + "px";
       };
       const up = () => {
@@ -491,23 +632,62 @@ export class App {
 
   private bindSidebarTabs() {
     const header = document.getElementById("sidebar-header")!;
-    document.getElementById("tabbar")?.classList.toggle("wrap", localStorage.getItem("uec.tabwrap") === "1");
+    document.getElementById("tabbar")?.classList.remove("wrap");
     header.addEventListener("click", (e) => {
       const tab = (e.target as HTMLElement).closest<HTMLElement>(".sb-tab");
       if (!tab) return;
       const name = tab.dataset.sb;
       header.querySelectorAll(".sb-tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
-      document.getElementById("filetree")!.classList.toggle("hidden", name !== "local");
+      document.getElementById("local-wrap")!.classList.toggle("hidden", name !== "local");
       document.getElementById("outline-panel")!.classList.toggle("hidden", name !== "outline");
+      document.getElementById("bookmarks-panel")!.classList.toggle("hidden", name !== "bookmarks");
       document.getElementById("search-panel")!.classList.toggle("hidden", name !== "search");
       document.getElementById("remote-panel")!.classList.toggle("hidden", name !== "remote");
       if (name === "outline") this.refreshOutline();
+      if (name === "bookmarks") this.renderBookmarksPanel();
+    });
+  }
+
+  // 显示隐藏文件总开关（本地 + 远程，状态持久化）
+  // 按钮位于路径栏内、由 FileTree/RemoteBrowser 动态渲染，故用事件委托
+  private bindHiddenToggle() {
+    const sync = () => {
+      for (const b of Array.from(document.querySelectorAll<HTMLElement>("#sb-hidden-local, #sb-hidden-remote"))) {
+        b.classList.toggle("on", this.showHidden);
+        b.title = t(this.showHidden ? "隐藏隐藏文件" : "显示隐藏文件");
+      }
+    };
+    sync();
+    document.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLElement>("#sb-hidden-local, #sb-hidden-remote");
+      if (!btn) return;
+      e.preventDefault();
+      this.showHidden = !this.showHidden;
+      try {
+        localStorage.setItem("0xedit.showHidden", this.showHidden ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      sync();
+      this.tree.setShowHidden(this.showHidden);
+      this.remote.setShowHidden(this.showHidden);
+    });
+  }
+
+  // 刷新入口：本地/远程树路径栏右侧（与隐藏文件眼睛并列，事件委托）
+  private bindRefreshButtons() {
+    document.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLElement>("#sb-refresh-local, #sb-refresh-remote");
+      if (!btn) return;
+      e.preventDefault();
+      if (btn.id === "sb-refresh-local") void this.tree.refresh();
+      else void this.remote.refresh();
     });
   }
 
   private gotoLineInActive(line: number) {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc || doc.mode === "hex") return;
     const ln = v.state.doc.line(Math.max(1, Math.min(line, v.state.doc.lines)));
@@ -520,12 +700,49 @@ export class App {
 
   private refreshOutline() {
     const doc = this.active;
-    const v = this.view;
+    const v = this.curView;
     if (!doc || !v || doc.mode === "hex" || !doc.path) {
       this.outline.clear();
       return;
     }
     this.outline.render(doc.path, v.state.doc.toString());
+  }
+
+  // 书签面板：列出所有打开文件的全部书签，点击跳转
+  private renderBookmarksPanel() {
+    const el = document.getElementById("bookmarks-panel");
+    if (!el) return;
+    const rows: string[] = [];
+    for (const d of this.docs.values()) {
+      if (!d.path || d.isBinary || d.mode === "hex" || !d.state) continue;
+      const lines = getBookmarkLines(d.state);
+      for (const ln of lines) {
+        let text = "";
+        try {
+          text = d.state.doc.line(ln).text.trim();
+        } catch {
+          /* line may be gone */
+        }
+        rows.push(`<div class="bm-item" data-path="${escapeHtmlFor(d.path)}" data-line="${ln}">
+          <span class="bm-path">${escapeHtmlFor(d.name)}</span>
+          <span class="bm-line">${ln}</span>
+          <span class="bm-text">${escapeHtmlFor(text.slice(0, 80) || "∅")}</span>
+        </div>`);
+      }
+    }
+    el.innerHTML = rows.length
+      ? rows.join("")
+      : `<div class="outline-empty">${t("暂无书签（点击行号旁的书签栏，或按 ⌘F2 添加）")}</div>`;
+    el.querySelectorAll<HTMLElement>(".bm-item").forEach((it) => {
+      it.addEventListener("click", () => {
+        const p = it.dataset.path!;
+        const line = parseInt(it.dataset.line!, 10);
+        const doc = [...this.docs.values()].find((d) => d.path === p && !d.isBinary);
+        if (!doc) return;
+        if (this.activeId !== doc.id) this.activate(doc.id);
+        window.setTimeout(() => this.gotoLineInActive(line), 30);
+      });
+    });
   }
 
   private bindDrop() {
@@ -574,15 +791,22 @@ export class App {
   // ---------------------------------------------------------------- docs
 
   async newDoc() {
+    let n = 1;
+    const re = /^(?:无标题|Untitled|無題)\s*(\d+)$/;
+    for (const d of this.docs.values()) {
+      const m = d.name.match(re);
+      if (m) n = Math.max(n, parseInt(m[1], 10) + 1);
+    }
     const doc: Document = {
       id: uid(),
       path: "",
-      name: t("无标题 1"),
+      name: `${t("无标题")} ${n}`,
       encoding: "utf-8",
       lineEnding: "lf",
       isBinary: false,
       mode: "text",
       dirty: false,
+      savedContent: "",
       size: 0,
       truncated: false,
     };
@@ -593,6 +817,22 @@ export class App {
     this.docs.set(doc.id, doc);
     this.tabOrder.push(doc.id);
     this.renderTabs();
+    if (this.tileMode && doc.mode === "text" && this.tileCells.size < 12) {
+      const cell = new TileCell(
+        doc,
+        (id) => this.activateTileCell(id),
+        (id) => void this.closeTab(id),
+        (x, y, d) => this.showTabMenu(x, y, d as Document),
+      );
+      this.tileCells.set(doc.id, cell);
+      this.tileArea.appendChild(cell.el);
+      this.layoutTiles(this.tileCells.size);
+      const total = [...this.docs.values()].filter((d) => d.mode === "text").length;
+      this.updateTileMore(total, this.tileCells.size);
+      this.activateTileCell(doc.id);
+      this.saveSessionNow();
+      return;
+    }
     this.activate(doc.id);
   }
 
@@ -631,6 +871,7 @@ export class App {
       doc.mode = "hex";
       doc.isBinary = true;
     } else {
+      doc.savedContent = res.text;
       doc.state = EditorState.create({
         doc: res.text,
         extensions: this.extForDoc(doc),
@@ -664,8 +905,16 @@ export class App {
     document.body.appendChild(modal);
   }
 
+  // 归档内文档的 path 是归档文件本身，语言识别与显示需用条目名（entry）
+  private docLangPath(doc: Document): string | undefined {
+    if (doc.archive) return doc.archive.entry;
+    if (doc.remote) return doc.remote.path;
+    return doc.path;
+  }
+
   private extForDoc(doc: Document): import("@codemirror/state").Extension[] {
-    const lang = doc.path ? langForPath(doc.path) : { ext: [], name: t("纯文本") };
+    const langPath = this.docLangPath(doc);
+    const lang = langPath ? langForPath(langPath) : { ext: [], name: t("纯文本") };
     const base: import("@codemirror/state").Extension[] = [
       lineNumbers(),
       highlightActiveLineGutter(),
@@ -677,8 +926,12 @@ export class App {
       indentOnInput(),
       bracketMatching(),
       closeBrackets(),
-      autocompletion({ override: [snippetCompletionSource, kwSourceFor(doc.path || "")] }),
-      syntaxHighlighting(defaultHighlightStyle),
+      autocompletion({ override: [snippetCompletionSource, kwSourceFor(this.docLangPath(doc) || "")] }),
+      EditorView.domEventHandlers({
+        paste: (e) => this.mdPasteImage(e),
+        drop: (e) => this.mdDropImage(e),
+      }),
+      this.syntaxCompartment.of(highlightForTheme()),
       highlightSelectionMatches(),
       search(),
       searchHighlight(),
@@ -691,7 +944,7 @@ export class App {
       macroExtension(),
       wrapCompartment.of(this.prefWrap ? EditorView.lineWrapping : []),
       wsCompartment.of(this.prefWs ? [highlightWhitespace()] : []),
-      langCompartment.of(isMarkdownDoc(doc.path, doc.name) ? markdown({ base: markdownLanguage }) : []),
+      langCompartment.of(isMarkdownDoc(this.docLangPath(doc), doc.name) ? markdown({ base: markdownLanguage }) : lang.ext),
       themeBase(),
       rectangleSelection,
       EditorView.updateListener.of((u) => this.onEditorUpdate(u)),
@@ -728,37 +981,110 @@ export class App {
         { key: "Mod--", run: jumpBack },
         { key: "Mod-Shift--", run: jumpForward },
       ]),
+      keymap.of(isMarkdownDoc(this.docLangPath(doc), doc.name) ? [
+        { key: "Mod-b", run: () => { this.mdFormat("bold"); return true; } },
+        { key: "Mod-i", run: () => { this.mdFormat("italic"); return true; } },
+        { key: "Mod-Shift-x", run: () => { this.mdFormat("strike"); return true; } },
+        { key: "Mod-Shift-c", run: () => { this.mdFormat("code"); return true; } },
+        { key: "Mod-Shift-a", run: () => { this.mdFormat("codeblock"); return true; } },
+        { key: "Mod-k", run: () => { this.mdFormat("link"); return true; } },
+      ] : []),
     ];
     if (lang.ext) base.push(lang.ext);
     return base;
+  }
+
+  private markSaved(doc: Document) {
+    doc.dirty = false;
+    if (doc.state) doc.savedContent = doc.state.doc.toString();
+    this.updateTabDot(doc);
+  }
+
+  private scheduleDirtyCheck(doc: Document) {
+    if (doc.savedContent === undefined) return;
+    const prev = this.dirtyTimers.get(doc.id);
+    if (prev) clearTimeout(prev);
+    const timer = window.setTimeout(() => {
+      this.dirtyTimers.delete(doc.id);
+      if (!doc.dirty || !doc.state) return;
+      const sc = doc.savedContent;
+      if (sc === undefined) return;
+      const cur = doc.state.doc.toString();
+      if (cur.length === sc.length && cur === sc) {
+        doc.dirty = false;
+        this.updateTabDot(doc);
+      }
+    }, 400);
+    this.dirtyTimers.set(doc.id, timer);
   }
 
   private onEditorUpdate(u: import("@codemirror/view").ViewUpdate) {
     const doc = this.active;
     if (!doc) return;
     doc.state = u.state;
+    // 左侧编辑 → 实时同步到分屏右侧（防循环由 splitSyncing 保证）
+    if (this.splitView && this.splitDocId === doc.id && u.docChanged && !this.splitSyncing) {
+      this.splitSyncing = true;
+      try {
+        this.splitView.dispatch({
+          changes: { from: 0, to: this.splitView.state.doc.length, insert: u.state.doc.toString() },
+        });
+      } finally {
+        this.splitSyncing = false;
+      }
+    }
     if (u.docChanged) {
       doc.dirty = true;
       this.updateTabDot(doc);
+      this.scheduleDirtyCheck(doc);
     }
     if (u.docChanged || u.selectionSet || u.viewportChanged) {
       this.updateStatus();
+    }
+    if (this.tileMode) {
+      const cell = this.tileCells.get(doc.id);
+      if (cell && u.docChanged) cell.scheduleRefresh();
+      if (cell && u.selectionSet && cell.previewVisible) {
+        cell.refreshPreview();
+      }
+      return;
     }
     if (u.docChanged && !document.getElementById("outline-panel")!.classList.contains("hidden")) {
       this.refreshOutline();
     }
     if (u.docChanged && this.previewOn) this.schedulePreview();
+    // 光标位置驱动预览：仅滚动不触发时（如键盘/点击把光标移到顶部）也跟随
+    if (u.selectionSet && this.previewOn && this.preview) {
+      const head = u.state.selection.main.head;
+      const line = u.state.doc.lineAt(head).number;
+      this.preview.syncCursor(line, u.state.doc.lines);
+    }
   }
 
   private activate(id: string) {
     const prev = this.active;
+    this.activeTermId = null;
+    this.termArea.classList.add("hidden");
+    if (this.tileMode) {
+      const doc = this.docs.get(id);
+      if (!doc) return;
+      if (doc.mode === "hex") {
+        // hex 不参与平铺：先合并回单格再走常规激活
+        this.mergeTags();
+      } else {
+        this.activateTileCell(id);
+        return;
+      }
+    }
     if (prev && prev.id !== id && this.view) {
       prev.scrollTop = this.view.scrollDOM.scrollTop;
     }
     this.activeId = id;
     const doc = this.docs.get(id)!;
     if (doc.mode === "hex") {
-      if (this.previewOn) this.closePreview();
+      if (this.previewOn) this.closePreview(true);
+      // 十六进制不支持分屏：切换时关闭
+      if (this.splitView) this.destroySplit();
       this.editorEl.classList.add("hidden");
       this.hexEl.classList.remove("hidden");
       this.emptyStateEl.classList.add("hidden");
@@ -801,9 +1127,19 @@ export class App {
         ],
       });
       this.view.focus();
-      this.statusEls.lang.textContent = doc.path ? langForPath(doc.path).name : t("纯文本");
+      const langPath = this.docLangPath(doc);
+      this.statusEls.lang.textContent = langPath ? langForPath(langPath).name : t("纯文本");
+      // 分屏跟随当前文档：切换文本标签时右侧重新渲染（hex 已在上方关闭分屏）
+      if (this.splitView && this.splitDocId !== doc.id) this.openInSplit(doc.id);
     }
     this.renderTabs();
+    // 切回 Markdown 且用户此前开启过预览 → 自动恢复双栏（分屏打开时不抢，避免三栏）
+    if (
+      !this.splitView &&
+      doc.mode !== "hex" && this.prefPreview && !this.previewOn && isMarkdownDoc(this.docLangPath(doc), doc.name)
+    ) {
+      this.openPreview();
+    }
     this.updateStatus();
     this.updateModeButton();
     this.updateColumnButton();
@@ -813,15 +1149,18 @@ export class App {
   private updateStatus() {
     const doc = this.active;
     if (!doc) return;
+    this.syncPreviewBtn();
+    this.syncMdToolbar();
     this.statusEls.path.textContent = doc.path || t(doc.name);
     this.statusEls.encoding.textContent = `${doc.encoding} · ${lineEndingLabel(doc.lineEnding)}`;
-    this.statusEls.lang.textContent = doc.path ? langForPath(doc.path).name : t("纯文本");
+    const langPath = this.docLangPath(doc);
+    this.statusEls.lang.textContent = langPath ? langForPath(langPath).name : t("纯文本");
     if (doc.mode === "hex") {
       this.statusEls.size.textContent = formatSize(doc.hexBytes?.length ?? doc.size);
     } else {
       const len = doc.state?.doc.length ?? 0;
       this.statusEls.size.textContent = `${len} ${t("字符")}`;
-      const v = this.view;
+      const v = this.curView;
       if (v) {
         const sel = v.state.selection.main;
         const line = v.state.doc.lineAt(sel.head);
@@ -833,9 +1172,12 @@ export class App {
 
   private updateTabDot(doc: Document) {
     const tab = this.tabbarEl.querySelector<HTMLElement>(`[data-tab="${doc.id}"]`);
-    if (!tab) return;
-    const dot = tab.querySelector<HTMLElement>(".tab-dot");
-    if (dot) dot.style.opacity = doc.dirty ? "1" : "0";
+    if (tab) {
+      const dot = tab.querySelector<HTMLElement>(".tab-dot");
+      if (dot) dot.style.opacity = doc.dirty ? "1" : "0";
+    }
+    const cell = this.tileCells.get(doc.id);
+    cell?.setDirty(!!doc.dirty);
   }
 
   private renderTabs() {
@@ -900,6 +1242,101 @@ export class App {
       });
       this.tabbarEl.appendChild(tab);
     }
+    for (const id of this.termOrder) {
+      const term = this.terms.get(id);
+      if (!term) continue;
+      const tab = document.createElement("div");
+      tab.className = "tab term-tab";
+      if (id === this.activeTermId) tab.classList.add("active");
+      tab.dataset.tab = id;
+      tab.dataset.kind = "term";
+      const name = document.createElement("span");
+      name.className = "tab-name";
+      name.textContent = term.title || `${t("终端")} @ ${term.host}`;
+      name.title = term.remoteTitle || term.title || name.textContent;
+      const close = document.createElement("button");
+      close.className = "tab-close";
+      close.textContent = "✕";
+      close.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.closeTerm(id);
+      });
+      tab.append(name, close);
+      tab.addEventListener("click", () => this.activateTerm(id));
+      tab.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        this.showTermMenu(e.clientX, e.clientY, id);
+      });
+      this.tabbarEl.appendChild(tab);
+    }
+    // 平铺模式下格子标题与终端 tab 名保持一致（含"重命名会话"）
+    this.termTileCells.forEach((cell, tid) => {
+      const tm = this.terms.get(tid);
+      if (tm) cell.setTitle(tm.title);
+    });
+    const active = this.tabbarEl.querySelector<HTMLElement>(".tab.active");
+    if (active) {
+      const bar = this.tabbarEl;
+      const l = active.offsetLeft;
+      const r = l + active.offsetWidth;
+      if (l < bar.scrollLeft) bar.scrollLeft = l;
+      else if (r > bar.scrollLeft + bar.clientWidth) bar.scrollLeft = r - bar.clientWidth;
+    }
+    this.refreshTabMore();
+  }
+
+  private refreshTabMore() {
+    const btn = document.getElementById("tab-more");
+    if (!btn) return;
+    const over = this.tabbarEl.scrollWidth > this.tabbarEl.clientWidth + 2;
+    btn.classList.toggle("hidden", !over);
+  }
+
+  private openTabMoreMenu() {
+    const items: MenuEntry[] = [];
+    for (const id of this.tabOrder) {
+      const d = this.docs.get(id);
+      if (!d) continue;
+      items.push([d.name + (d.dirty ? " •" : ""), () => this.activate(id), "", () => d.id === this.activeId]);
+    }
+    if (items.length > 0 && this.termOrder.length > 0) items.push(["---", () => {}]);
+    for (const id of this.termOrder) {
+      const tm = this.terms.get(id);
+      if (!tm) continue;
+      const title = tm.title || `${t("终端")} @ ${tm.host}`;
+      items.push([title, () => this.activateTerm(id), "", () => id === this.activeTermId]);
+    }
+    const btn = document.getElementById("tab-more");
+    if (btn) this.showMenuAt(btn, items);
+  }
+
+  private showEditorCtxMenu(e: MouseEvent) {
+    const doc = this.active;
+    const v = this.curView;
+    if (!doc || !v || doc.mode === "hex") return;
+    const sel = v.state.selection.main;
+    const hasSel = !sel.empty;
+    const items: MenuEntry[] = [
+      ["撤销", () => this.exec("undo"), "⌘Z"],
+      ["重做", () => this.exec("redo"), "⇧⌘Z"],
+      ["---", () => {}],
+      ["剪切", () => this.exec("cut"), "⌘X"],
+      ["复制", () => this.exec("copy"), "⌘C"],
+      ["粘贴", () => this.exec("paste"), "⌘V"],
+      ["全选", () => this.exec("selectAll"), "⌘A"],
+      ["---", () => {}],
+      ["查找…", () => this.find.open(), "⌘F"],
+      ["替换…", () => this.find.open({ replace: true }), "⇧⌘F"],
+      ["---", () => {}],
+      ["自动换行", () => this.toggleWrap(), "", () => this.prefWrap],
+      ["显示空白字符", () => this.toggleWhitespace(), "", () => this.prefWs],
+      ["---", () => {}],
+      ["复制路径", () => {
+        void navigator.clipboard.writeText(doc.path || doc.name);
+      }],
+    ];
+    void hasSel;
+    this.showMenu(e.clientX, e.clientY, items);
   }
 
   private showTabMenu(x: number, y: number, doc: Document) {
@@ -919,12 +1356,77 @@ export class App {
     this.showMenu(x, y, items);
   }
 
+  private showTermMenu(x: number, y: number, id: string) {
+    const term = this.terms.get(id);
+    if (!term) return;
+    const title = term.title || `${t("终端")} @ ${term.host}`;
+    const items: Array<[string, () => void]> = [
+      ["重命名会话…", () => void this.renameTerm(id)],
+      ["关闭", () => this.closeTerm(id)],
+      ["关闭其他终端", () => {
+        for (const x of [...this.termOrder]) if (x !== id) this.closeTerm(x);
+      }],
+      ["关闭所有终端", () => {
+        for (const x of [...this.termOrder]) this.closeTerm(x);
+      }],
+      ["复制会话信息", () => {
+        void navigator.clipboard.writeText(title);
+      }],
+    ];
+    this.showMenu(x, y, items);
+  }
+
+  private async renameTerm(id: string) {
+    const term = this.terms.get(id);
+    if (!term) return;
+    const cur = term.title || `${t("终端")} @ ${term.host}`;
+    const name = await this.promptText(t("重命名会话"), t("会话名称"), cur);
+    if (!name || name.trim() === "") return;
+    term.title = name.trim();
+    this.renderTabs();
+  }
+
+  private promptText(title: string, label: string, value = ""): Promise<string | null> {
+    return new Promise((resolve) => {
+      const mask = document.createElement("div");
+      mask.className = "modal-mask";
+      mask.innerHTML = `<div class="modal" style="min-width:320px;">
+        <div class="modal-title">${escapeHtmlFor(title)}</div>
+        <div class="modal-body">
+          <label class="acct-f">${escapeHtmlFor(label)}<input id="pt-input" class="fs-input" value="${escapeHtmlFor(value)}" autofocus/></label>
+        </div>
+        <div class="modal-actions">
+          <button class="search-btn" id="pt-ok">确定</button>
+          <button class="search-btn" id="pt-cancel">取消</button>
+        </div>
+      </div>`;
+      document.body.appendChild(mask);
+      const input = mask.querySelector<HTMLInputElement>("#pt-input")!;
+      const done = (v: string | null) => {
+        mask.remove();
+        resolve(v);
+      };
+      mask.querySelector("#pt-ok")!.addEventListener("click", () => done(input.value.trim() || null));
+      mask.querySelector("#pt-cancel")!.addEventListener("click", () => done(null));
+      mask.addEventListener("click", (e) => {
+        if (e.target === mask) done(null);
+      });
+      input.focus();
+      input.select();
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") done(input.value.trim() || null);
+        if (e.key === "Escape") done(null);
+      });
+    });
+  }
+
   // ---------------------------------------------------------------- menu
 
-  private menuData: Record<string, () => Array<[string, () => void, string?]>> = {
+  private menuData: Record<string, () => MenuEntry[]> = {
     "文件": () => [
       ["新建", () => this.newDoc(), "⌘N"],
       ["打开文件…", () => this.openDialog(), "⌘O"],
+      ["快速打开文件…", () => void this.openQuickOpen(), "⌘P"],
       ["打开文件夹…", () => this.openFolderDialog(), ""],
       ["---", () => {}, ""],
       ["保存", () => this.save(false), "⌘S"],
@@ -932,7 +1434,8 @@ export class App {
       ["导出为 HTML（可打印/存 PDF）", () => this.exportHtml(), ""],
       ["导出 Markdown（HTML/PDF）", () => this.exportMarkdown(), ""],
       ["导出为 Word（.doc）", () => this.exportWord(), ""],
-      ["打印…", () => this.printActive(), "⌘P"],
+      ["打印…", () => this.printActive(), ""],
+      ["重新打开为…", () => this.reopenAsDialog(), ""],
       ["编码转换…", () => this.encodingDialog(), ""],
       ["关闭标签", () => this.active && this.closeTab(this.active.id), "⌘W"],
       ["新窗口", () => invoke("new_window").catch((e) => this.alert(t("无法打开新窗口：") + `\n${e}`)), ""],
@@ -960,7 +1463,7 @@ export class App {
       ["小写", () => this.execCmd(lowerCaseCmd), "⇧⌘U"],
       ["首字母大写", () => this.execCmd(titleCaseSelection), ""],
       ["---", () => {}, ""],
-      ["列编辑模式", () => this.toggleColumn(), "⌘L"],
+      ["列编辑模式", () => this.toggleColumn(), "⌘L", () => isColumnMode()],
       ["添加上方光标", () => this.execCmd(addCursorAbove), "⌘⌥↑"],
       ["添加下方光标", () => this.execCmd(addCursorBelow), "⌘⌥↓"],
       ["---", () => {}, ""],
@@ -982,15 +1485,15 @@ export class App {
       ["插入日期/时间…", () => this.insertDateTimeDialog(), ""],
       ["插入字符/ASCII 表…", () => this.charTableDialog(), ""],
       ["---", () => {}, ""],
-      ["录制/停止宏", () => this.execCmd(toggleRecordMacro), ""],
+      ["录制/停止宏", () => this.execCmd(toggleRecordMacro), "", () => { const v = this.curView; return !!v && isRecording(v.state); }],
       ["播放宏", () => this.execCmd(runMacro), ""],
       ["清除宏", () => this.execCmd(clearMacro), ""],
       ["宏管理…", () => {
-        const v = this.view;
+        const v = this.curView;
         if (v) macroManagerDialog(v, (m) => { this.statusEls.pos.textContent = m; });
       }, ""],
       ["代码片段…", () => snippetManagerDialog(), ""],
-      ["剪贴板历史…", () => this.openClipHist(), ""],
+      ["剪贴板历史…", () => this.openClipHist(), "⇧⌘V"],
     ],
     "工具": () => [
       ["JSON 格式化", () => this.applyTool(formatJson), ""],
@@ -1042,27 +1545,33 @@ export class App {
       ["命令面板", () => this.openPalette(), "⇧⌘P"],
     ],
     "视图": () => [
-      ["切换侧边栏", () => this.toggleSidebar(), "⌘B"],
+      ["切换侧边栏", () => this.toggleSidebar(), "⌘B", () => !document.getElementById("sidebar")!.classList.contains("collapsed")],
       ["切换主题", () => this.toggleTheme(), ""],
-      ["切换文本/十六进制", () => this.toggleMode(), ""],
-      ["标签列表…", () => this.showTabList(), "⇧⌘E"],
-      ["拆分/合并窗口", () => this.toggleSplit(), "⌘\\"],
-      [this.previewOn ? t("关闭预览") : t("Markdown 预览"), () => this.togglePreview(), ""],
-      ["自动换行", () => this.toggleWrap(), ""],
-      ["显示空白字符", () => this.toggleWhitespace(), ""],
-      ["标签换行模式", () => this.toggleTabWrap(), ""],
-      ["自动保存", () => this.toggleAutosave(), ""],
+      ["切换文本/十六进制", () => this.toggleMode(), "⌘M", () => this.active?.mode === "hex"],
+      ["标签列表…", () => this.showTabList(), ""],
+      ["拆分/合并窗口", () => this.toggleSplit(), "⌘\\", () => !!this.splitView],
+      [this.previewOn ? t("关闭预览") : t("Markdown 预览"), () => this.togglePreview(), "⇧⌘E", () => this.previewOn],
+      ["自动换行", () => this.toggleWrap(), "", () => this.prefWrap],
+      ["显示空白字符", () => this.toggleWhitespace(), "", () => this.prefWs],
+      ["自动保存", () => this.toggleAutosave(), "", () => this.autosave],
       ["设置…", () => this.settingsDialog(), ""],
           ["清空最近文件", () => { clearRecent(); this.alert(t("已清空最近文件列表。")); }, ""],
+    ],
+    "窗口": () => [
+      ["平铺标签（上下）", () => this.tileTags("v"), "", () => this.tileMode === "v"],
+      ["平铺标签（左右）", () => this.tileTags("h"), "", () => this.tileMode === "h"],
+      ["合并标签", () => this.mergeTags(), "", () => !!this.tileMode],
+      ["---", () => {}, ""],
+      ["拆分/合并窗口", () => this.toggleSplit(), "⌘\\", () => !!this.splitView],
     ],
     "帮助": () => [
       ["检查更新…", () => this.checkForUpdate(), ""],
       ["关于", () => this.alert(t("about.text")), ""],
     ],
     "语言": () => [
-      ["简体中文", () => setLang("zh-CN"), ""],
-      ["English", () => setLang("en-US"), ""],
-      ["日本語", () => setLang("ja-JP"), ""],
+      ["简体中文", () => setLang("zh-CN"), "", () => getLang() === "zh-CN"],
+      ["English", () => setLang("en-US"), "", () => getLang() === "en-US"],
+      ["日本語", () => setLang("ja-JP"), "", () => getLang() === "ja-JP"],
     ],
   };
 
@@ -1120,7 +1629,7 @@ export class App {
     set("lbl-word", "text", t("全词"));
     set("lbl-whole", "text", t("循环"));
     set("search-count", "text", t("计数"));
-    set("search-bookmark", "text", t("书签全部"));
+    set("search-bookmark", "text", t("全部加书签"));
     set("replace-one", "text", t("替换"));
     set("replace-all", "text", t("全部替换"));
     set("replace-sel", "text", t("选中替换"));
@@ -1158,11 +1667,6 @@ export class App {
     }
     const handle = document.querySelector(".sb-resize-handle");
     if (handle) handle.setAttribute("title", t("拖拽调整宽度"));
-    const sbToggle = document.getElementById("sb-toggle");
-    if (sbToggle) {
-      sbToggle.setAttribute("title", `${t("折叠/展开侧边栏")} (${fmtHint("⌘B")})`);
-      sbToggle.setAttribute("aria-label", t("折叠侧边栏"));
-    }
     const tabs: Record<string, string> = {
       local: "本地",
       outline: "大纲",
@@ -1201,18 +1705,17 @@ export class App {
     }
   }
 
-  private showMenuAt(anchor: HTMLElement, items: Array<[string, () => void, string?]>) {
+  private showMenuAt(anchor: HTMLElement, items: MenuEntry[]) {
     this.closeMenus();
     const rect = anchor.getBoundingClientRect();
-    this.showMenu(rect.left, rect.bottom, items.map((i) => [i[0], i[1], i[2]] as [string, () => void, string?]));
+    this.showMenu(rect.left, rect.bottom, items);
   }
 
-  private showMenu(x: number, y: number, items: Array<[string, () => void, string?]>) {
+  private showMenu(x: number, y: number, items: MenuEntry[]) {
     this.closeMenus();
-    const langMark = { "zh-CN": "简体中文", "en-US": "English", "ja-JP": "日本語" }[getLang()];
     const menu = document.createElement("div");
     menu.className = "dropdown-menu";
-    for (const [label, fn, hint] of items) {
+    for (const [label, fn, hint, checked] of items) {
       if (label === "---") {
         const sep = document.createElement("div");
         sep.className = "menu-sep";
@@ -1223,7 +1726,8 @@ export class App {
       it.className = "menu-item-drop";
       const labelEl = document.createElement("span");
       labelEl.className = "menu-label";
-      labelEl.textContent = label === langMark ? "✓ " + t(label) : t(label);
+      const on = typeof checked === "function" ? checked() : !!checked;
+      labelEl.textContent = (on ? "✓ " : "") + t(label);
       it.appendChild(labelEl);
       if (hint) {
         const hintEl = document.createElement("span");
@@ -1297,6 +1801,36 @@ export class App {
     });
   }
 
+  // 关闭时保存指定文档；无路径的弹"另存为"，取消则返回 false（中止关闭）
+  private async saveDocWithDialog(d: Document): Promise<boolean> {
+    if (!d.state) return false;
+    if (d.path) {
+      return this.saveDocument(d);
+    }
+    let path = "";
+    if (inTauri()) {
+      try {
+        const picked = await dialogSave({ title: "保存文件", defaultPath: d.name });
+        if (!picked) return false;
+        path = picked;
+      } catch {
+        return false;
+      }
+    }
+    if (!path) return false;
+    d.path = path;
+    d.name = path.split(/[\\/]/).pop() || path;
+    d.archive = undefined;
+    d.remote = undefined;
+    const text = d.state.doc.toString();
+    d.state = EditorState.create({ doc: text, extensions: this.extForDoc(d) });
+    if (this.activeId === d.id && this.view) this.view.setState(d.state);
+    const ok = await this.saveDocument(d);
+    this.renderTabs();
+    this.updateStatus();
+    return ok;
+  }
+
   // ---------------------------------------------------------------- toolbar
 
   private bindToolbar() {
@@ -1305,6 +1839,11 @@ export class App {
       if (!btn) return;
       const act = btn.dataset.action;
       this.runAction(act!);
+    });
+    document.getElementById("md-toolbar")!.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLElement>("[data-md]");
+      if (!btn) return;
+      this.mdFormat(btn.dataset.md!);
     });
     document.getElementById("empty-state")!.addEventListener("click", (e) => {
       const btn = (e.target as HTMLElement).closest<HTMLElement>("[data-action]");
@@ -1332,11 +1871,16 @@ export class App {
       case "goto": this.gotoLineDialog(); break;
       case "closeTab": if (this.active) this.closeTab(this.active.id); break;
       case "column": this.toggleColumn(); break;
+      case "preview": this.togglePreview(); break;
       case "mode": this.toggleMode(); break;
       case "palette": this.openPalette(); break;
+      case "quickopen": void this.openQuickOpen(); break;
       case "split": this.toggleSplit(); break;
       case "print": this.printActive(); break;
       case "cliphist": this.openClipHist(); break;
+      case "termFind": this.termFindActive(); break;
+      case "zoomIn": this.zoomActive(1); break;
+      case "zoomOut": this.zoomActive(-1); break;
       case "tree": this.toggleSidebar(); break;
       case "sidebar": this.toggleSidebar(); break;
       case "theme": this.toggleTheme(); break;
@@ -1344,7 +1888,7 @@ export class App {
   }
 
   private exec(cmd: string) {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc) return;
     if (doc.mode === "hex") return;
@@ -1398,7 +1942,7 @@ export class App {
   }
 
   private execCmd(fn: (v: EditorView) => boolean) {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc || doc.mode === "hex") return;
     fn(v);
@@ -1406,13 +1950,13 @@ export class App {
   }
 
   private openClipHist() {
-    const v = this.view;
+    const v = this.curView;
     if (!v) return;
     openClipHistory(v, (m) => { this.statusEls.pos.textContent = m; });
   }
 
   private convertLE(sep: LineEnding) {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc || doc.mode === "hex") return;
     if (convertLineEndings(v, doc, sep)) {
@@ -1473,6 +2017,77 @@ export class App {
     document.body.appendChild(modal);
   }
 
+  // 重新打开为：选择字符集，按指定编码重新解码当前文件（参考 UltraEdit 的"重新打开为"）
+  private reopenAsDialog() {
+    const doc = this.active;
+    if (!doc || !doc.path) { this.alert(t("当前文档没有可重新打开的磁盘路径。")); return; }
+    const encs = this.encodingOptions();
+    const opts = encs.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+    const modal = document.createElement("div");
+    modal.className = "modal-mask";
+    modal.innerHTML = `<div class="modal" style="min-width:380px;"><div class="modal-title">${t("重新打开为…")}</div><div class="modal-body">
+      <div style="margin-bottom:6px;">${t("文件：")}${escapeHtmlFor(doc.name)}</div>
+      <div style="margin-bottom:6px;">${t("当前检测编码：")}${doc.encoding}</div>
+      ${t("按以下字符集重新解码：")}
+      <select id="reopen-enc" style="margin:6px 0 0 0;width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:4px 8px;">${opts}</select>
+      <div style="margin-top:6px;font-size:12px;color:var(--fg-dim);">${t("仅改变文件的查看解读，不修改磁盘上的内容。")}</div>
+      <div class="modal-actions" style="margin-top:14px;">
+        <button data-act="ok" class="primary">${t("重新打开")}</button>
+        <button data-act="cancel">${t("取消")}</button>
+      </div>
+    </div></div>`;
+    modal.querySelector('[data-act="ok"]')!.addEventListener("click", async () => {
+      const enc = (modal.querySelector("#reopen-enc") as HTMLSelectElement).value;
+      modal.remove();
+      await this.reopenWithEncoding(enc);
+    });
+    modal.querySelector('[data-act="cancel"]')!.addEventListener("click", () => modal.remove());
+    modal.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") modal.remove();
+    });
+    document.body.appendChild(modal);
+  }
+
+  // 按指定编码重新解码当前文档（复用文档标签与位置，仅替换内容解读）
+  private async reopenWithEncoding(enc: string) {
+    const doc = this.active;
+    if (!doc || !doc.path) return;
+    if (doc.dirty) {
+      const choice = await this.confirmDirty(doc);
+      if (choice === "cancel") return;
+      if (choice === "save") {
+        const ok = await this.save(false);
+        if (!ok) return;
+      }
+      doc.dirty = false;
+      this.updateTabDot(doc);
+    }
+    try {
+      const res = await invoke<{ text: string; truncated: boolean; encoding: string; size: number; is_binary: boolean; line_endings: string }>("read_text_file_as", { path: doc.path, encoding: enc });
+      doc.encoding = res.encoding;
+      doc.isBinary = false;
+      doc.mode = "text";
+      doc.lineEnding = res.line_endings || "lf";
+      doc.size = res.size;
+      doc.truncated = res.truncated;
+      doc.savedContent = res.text;
+      doc.state = EditorState.create({ doc: res.text, extensions: this.extForDoc(doc) });
+      if (this.view) this.view.setState(doc.state);
+      this.editorEl.classList.remove("hidden");
+      this.hexEl.classList.add("hidden");
+      this.hexRoot.classList.add("hidden");
+      this.emptyStateEl.classList.add("hidden");
+      if (this.splitView && this.splitDocId === doc.id) this.openInSplit(doc.id);
+      this.renderTabs();
+      this.updateStatus();
+      this.updateModeButton();
+      this.updateColumnButton();
+      this.view?.focus();
+    } catch (e) {
+      this.alert(t("重新打开失败：") + `\n${e}`);
+    }
+  }
+
   private defaultSearchDir(): string {
     if (this.searchDir) return this.searchDir;
     const doc = this.active;
@@ -1512,8 +2127,13 @@ export class App {
 
   private async exportHtml() {
     const doc = this.active;
-    const v = this.view;
+    const v = this.curView;
     if (!doc || !v || doc.mode === "hex") return;
+    if (isMarkdownDoc(this.docLangPath(doc), doc.name)) {
+      // Markdown 文档导出为渲染后的 HTML（可打印/存 PDF）
+      await this.exportMarkdown();
+      return;
+    }
     const opts = await this.printOptionsDialog();
     if (!opts) return;
     const title = doc.name || "untitled";
@@ -1538,10 +2158,10 @@ export class App {
 
   private async exportMarkdown() {
     const doc = this.active;
-    const v = this.view;
+    const v = this.curView;
     if (!doc || !v) return;
     if (doc.mode === "hex") { this.alert(t("十六进制模式不支持导出，请切换回文本模式。")); return; }
-    if (!isMarkdownDoc(doc.path, doc.name)) {
+    if (!isMarkdownDoc(this.docLangPath(doc), doc.name)) {
       this.alert(t("仅 Markdown 文档支持此导出。"));
       return;
     }
@@ -1587,10 +2207,10 @@ export class App {
 
   private async exportWord() {
     const doc = this.active;
-    const v = this.view;
+    const v = this.curView;
     if (!doc || !v) return;
     if (doc.mode === "hex") { this.alert(t("十六进制模式不支持导出，请切换回文本模式。")); return; }
-    if (!isMarkdownDoc(doc.path, doc.name)) {
+    if (!isMarkdownDoc(this.docLangPath(doc), doc.name)) {
       this.alert(t("仅 Markdown 文档支持此导出。"));
       return;
     }
@@ -1705,6 +2325,216 @@ export class App {
     });
   }
 
+  // Markdown 预览按钮：非 markdown/hex 置灰，预览开启时高亮
+  private syncPreviewBtn() {
+    const btn = document.getElementById("btn-preview");
+    if (!btn) return;
+    const doc = this.active;
+    btn.classList.toggle("active", this.previewOn);
+    btn.classList.toggle("disabled", !(doc && doc.mode !== "hex" && isMarkdownDoc(this.docLangPath(doc), doc.name)));
+  }
+
+  // Markdown 格式工具栏显隐：仅 Markdown 文本文档显示
+  private syncMdToolbar() {
+    const doc = this.active;
+    this.mdToolbarEl.classList.toggle(
+      "hidden",
+      !(doc && doc.mode !== "hex" && isMarkdownDoc(this.docLangPath(doc), doc.name)),
+    );
+  }
+
+  // Markdown 格式命令：选中文本包裹/行首前缀，未选中插入模板并定位光标
+  private mdFormat(kind: string) {
+    const view = this.curView;
+    if (!view) return;
+    const { from, to } = view.state.selection.main;
+    const sel = view.state.sliceDoc(from, to);
+    const apply = (insert: string, cursor?: number) => {
+      const pos = cursor === undefined ? from + insert.length : from + cursor;
+      view.dispatch({ changes: { from, to, insert }, selection: { anchor: pos } });
+      view.focus();
+    };
+    // 行级前缀：对选区覆盖的整段按行加前缀（i 为行序号）
+    const prefix = (pfx: (i: number) => string, keepSelection = false) => {
+      const lineA = view.state.doc.lineAt(from);
+      const lineB = view.state.doc.lineAt(to);
+      const start = lineA.from;
+      const end = lineB.to;
+      const text = view.state.sliceDoc(start, end);
+      const out = text.split("\n").map((l, i) => pfx(i) + l).join("\n");
+      view.dispatch({
+        changes: { from: start, to: end, insert: out },
+        selection: keepSelection ? { anchor: start + out.length } : { anchor: start, head: start + out.length },
+      });
+      view.focus();
+    };
+    switch (kind) {
+      case "bold":
+        if (sel) apply(`**${sel}**`, 2);
+        else apply(`****`, 2);
+        break;
+      case "italic":
+        if (sel) apply(`*${sel}*`, 1);
+        else apply(`**`, 1);
+        break;
+      case "strike":
+        if (sel) apply(`~~${sel}~~`, 2);
+        else apply(`~~~~`, 2);
+        break;
+      case "code":
+        if (sel) apply("`" + sel + "`", 1);
+        else apply("``", 1);
+        break;
+      case "codeblock": {
+        const t = sel || "";
+        // 光标停在 ``` 后（语言位），输入语言（如 js/python）后 Enter 进入代码区
+        apply("```\n" + t + "\n```", 3);
+        break;
+      }
+      case "h1":
+      case "h2":
+      case "h3": {
+        const n = parseInt(kind[1], 10);
+        const lineA = view.state.doc.lineAt(from);
+        const lineB = view.state.doc.lineAt(to);
+        const start = lineA.from;
+        const end = lineB.to;
+        const text = view.state.sliceDoc(start, end);
+        const out = text
+          .split("\n")
+          .map((l) => l.replace(/^#{1,6}\s*/, ""))
+          .map((l) => "#".repeat(n) + " " + l)
+          .join("\n");
+        view.dispatch({ changes: { from: start, to: end, insert: out }, selection: { anchor: start + out.length } });
+        view.focus();
+        break;
+      }
+      case "quote":
+        prefix(() => "> ");
+        break;
+      case "ul":
+        prefix(() => "- ");
+        break;
+      case "ol":
+        prefix((i) => `${i + 1}. `);
+        break;
+      case "task":
+        prefix(() => "- [ ] ");
+        break;
+      case "link": {
+        const text = sel || "链接文字";
+        apply(`[${text}](url)`, text.length + 3);
+        break;
+      }
+      case "image": {
+        const desc = sel || "图片描述";
+        apply(`![${desc}](path)`, desc.length + 4);
+        break;
+      }
+      case "table": {
+        const ins = "\n| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n|  |  |  |\n";
+        apply(ins, ins.indexOf("|  |") + 2);
+        break;
+      }
+      case "hr":
+        apply("\n---\n", 0);
+        break;
+      case "toc": {
+        // 按全文标题生成目录（GitHub 风格锚点），插入到光标处
+        const text = view.state.doc.toString();
+        const heads: Array<{ level: number; text: string }> = [];
+        for (const l of text.split("\n")) {
+          const m = l.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+          if (m) heads.push({ level: m[1].length, text: m[2] });
+        }
+        if (!heads.length) {
+          this.alert("当前文档没有标题，无法生成目录。");
+          break;
+        }
+        const anchor = (s: string) =>
+          s.trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, "").replace(/\s+/g, "-");
+        const toc = heads
+          .map((h) => `${"  ".repeat(h.level - 1)}- [${h.text}](#${anchor(h.text)})`)
+          .join("\n");
+        apply("\n" + toc + "\n", 1);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  // Markdown 内粘贴/拖拽图片 → 自动保存到当前文件目录 assets/ 并插入链接
+  private mdInsertImageFile(file: File, nameHint: string) {
+    const doc = this.active;
+    if (!doc || !doc.path || doc.mode === "hex") return;
+    const slash = doc.path.lastIndexOf("/");
+    const dir = slash >= 0 ? doc.path.slice(0, slash) : ".";
+    const ext = (file.type.split("/")[1] || "png").replace("jpeg", "jpg");
+    const fileName = `img-${Date.now()}-${Math.floor(Math.random() * 1000)}.${ext}`;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      const b64 = reader.result.split(",")[1];
+      void invoke("write_binary_file", { path: `${dir}/assets/${fileName}`, dataBase64: b64 })
+        .then(() => {
+          const v = this.curView;
+          if (!v) return;
+          const { from, to } = v.state.selection.main;
+          const insert = `![${nameHint || fileName}](assets/${fileName})`;
+          v.dispatch({ changes: { from, to, insert }, selection: { anchor: from + insert.length } });
+          v.focus();
+          this.tree.refresh();
+        })
+        .catch((e) => this.alert(t("保存图片失败：") + `\n${e}`));
+    };
+    reader.readAsDataURL(file);
+  }
+
+  private mdPasteImage(e: ClipboardEvent): boolean {
+    const doc = this.active;
+    if (!doc || doc.mode === "hex" || !isMarkdownDoc(this.docLangPath(doc), doc.name)) return false;
+    const items = e.clipboardData?.items;
+    if (!items) return false;
+    for (const it of items) {
+      if (it.type.startsWith("image/")) {
+        const f = it.getAsFile();
+        if (!f) continue;
+        e.preventDefault();
+        this.mdInsertImageFile(f, f.name.replace(/\.[^.]+$/, ""));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private mdDropImage(e: DragEvent): boolean {
+    const doc = this.active;
+    if (!doc || doc.mode === "hex" || !isMarkdownDoc(this.docLangPath(doc), doc.name)) return false;
+    const files = e.dataTransfer?.files;
+    if (!files || !files.length) return false;
+    const img = Array.from(files).find((f) => f.type.startsWith("image/"));
+    if (!img) return false;
+    e.preventDefault();
+    this.mdInsertImageFile(img, img.name.replace(/\.[^.]+$/, ""));
+    return true;
+  }
+
+  // 预览中勾选任务列表 → 回写编辑区对应行（- [ ] ↔ - [x]）
+  private applyTaskToggle(line: number, checked: boolean) {
+    const v = this.curView;
+    const doc = this.active;
+    if (!v || !doc || doc.mode === "hex") return;
+    if (line < 1 || line > v.state.doc.lines) return;
+    const ln = v.state.doc.line(line);
+    const m = ln.text.match(/^(\s*[-*])\s*\[([ xX])\]/);
+    if (!m) return;
+    const marker = checked ? "x" : " ";
+    const insert = `${m[1]} [${marker}]${ln.text.slice(m[0].length)}`;
+    v.dispatch({ changes: { from: ln.from, to: ln.to, insert } });
+    v.focus();
+  }
+
   private loadSettings() {
     try {
       const vars = localStorage.getItem("uec.theme.vars");
@@ -1792,7 +2622,9 @@ export class App {
       ["新建", "new", "n"], ["打开", "open", "o"], ["保存", "save", "s"], ["另存为", "saveAs", "s"],
       ["查找", "find", "f"], ["替换", "replace", "f"], ["跳转行", "goto", "g"], ["关闭标签", "closeTab", "w"],
       ["侧边栏", "sidebar", "b"], ["列模式", "column", "l"], ["命令面板", "palette", "p"],
-      ["拆分窗口", "split", "\\"], ["打印", "print", "p"], ["剪贴板历史", "cliphist", "v"], ["文本/十六进制", "mode", "m"],
+      ["快速打开文件", "quickopen", "p"],
+      ["拆分窗口", "split", "\\"], ["打印", "print", ""], ["剪贴板历史", "cliphist", "v"], ["文本/十六进制", "mode", "m"],
+      ["终端搜索", "termFind", "f"], ["字号放大", "zoomIn", "="], ["字号缩小", "zoomOut", "-"],
     ].map(([label, act, defKey]) => {
       const cur = this.shortcutBinding(act as string) ?? { key: defKey as string, shift: false };
       return `<div class="sort-opt" style="margin:3px 0;">${t(label as string)}
@@ -1864,7 +2696,7 @@ export class App {
   async openFileAtLine(path: string, line: number) {
     await this.openFile(path);
     const doc = this.active;
-    const v = this.view;
+    const v = this.curView;
     if (!doc || !v || doc.mode === "hex") return;
     const l = Math.max(1, Math.min(line, v.state.doc.lines));
     const ln = v.state.doc.line(l);
@@ -1875,6 +2707,14 @@ export class App {
   }
 
   private async openRemoteDoc(tmp: string, proto: "ftp" | "sftp" | "ftps", id: string, remotePath: string) {
+    // 去重：同一远程文件已打开时直接激活，避免重复下载与重复 tab
+    const existing = [...this.docs.values()].find(
+      (d) => d.remote && d.remote.id === id && d.remote.path === remotePath && d.mode === "text"
+    );
+    if (existing) {
+      this.activate(existing.id);
+      return;
+    }
     let res;
     try {
       res = await invoke<{ text: string; truncated: boolean; encoding: string; is_binary: boolean; size: number }>("read_text_file", { path: tmp });
@@ -1897,8 +2737,58 @@ export class App {
       remote: { proto, id, path: remotePath },
     };
     if (!res.is_binary) {
+      doc.savedContent = res.text;
       doc.state = EditorState.create({ doc: res.text, extensions: this.extForDoc(doc) });
     }
+    this.addDoc(doc);
+  }
+
+  // 归档内条目 → 新 tab 打开（可编辑，⌘S 回写归档；本地归档就地重建，远程归档重建后回写服务器）
+  private async openArchiveDoc(
+    tmp: string,
+    kind: string,
+    entry: string,
+    archiveName: string,
+    proto?: "ftp" | "sftp" | "ftps",
+    id?: string,
+    remotePath?: string,
+  ) {
+    // 去重：同一归档的同一条目已打开则激活
+    const existing = [...this.docs.values()].find(
+      (d) => d.archive && d.archive.tmpPath === tmp && d.archive.entry === entry && d.mode === "text"
+    );
+    if (existing) {
+      this.activate(existing.id);
+      return;
+    }
+    let res;
+    try {
+      res = await invoke<{ text: string; is_binary: boolean; truncated: boolean; size: number }>(
+        "archive_read", { path: tmp, entryName: entry, maxBytes: 32 * 1024 * 1024 });
+    } catch (e) {
+      this.alert(t("打开失败：") + `\n${e}`);
+      return;
+    }
+    if (res.is_binary) {
+      this.alert(t("归档内该条目为二进制内容，无法在编辑器中打开"));
+      return;
+    }
+    const doc: Document = {
+      id: uid(),
+      path: tmp,
+      name: `${entry.split("/").pop() || entry} [${archiveName}]`,
+      encoding: "utf-8",
+      lineEnding: "lf",
+      isBinary: false,
+      mode: "text",
+      dirty: false,
+      size: res.size,
+      truncated: res.truncated,
+      remote: proto && id && remotePath ? { proto, id, path: remotePath } : undefined,
+      archive: { kind, entry, tmpPath: tmp, archiveName },
+    };
+    doc.savedContent = res.text;
+    doc.state = EditorState.create({ doc: res.text, extensions: this.extForDoc(doc) });
     this.addDoc(doc);
   }
 
@@ -1911,6 +2801,7 @@ export class App {
     const items: CommandEntry[] = [
       c("新建文件", "文件", () => this.newDoc()),
       c("打开文件…", "文件", () => this.openDialog()),
+      c("快速打开文件…", "文件", () => void this.openQuickOpen()),
       c("打开文件夹…", "文件", () => this.openFolderDialog()),
       c("保存", "文件", () => this.save(false)),
       c("另存为…", "文件", () => this.save(true)),
@@ -1921,6 +2812,7 @@ export class App {
       c("导出 Word", "文件", () => this.exportWord()),
       c("打印…", "文件", () => this.printActive()),
       c("编码转换…", "文件", () => this.encodingDialog()),
+      c("重新打开为…", "文件", () => this.reopenAsDialog()),
       c("查找…", "查找", () => this.find.open()),
       c("替换…", "查找", () => this.find.open({ replace: true })),
       c("查找下一个", "查找", () => this.exec("findNext")),
@@ -1937,7 +2829,7 @@ export class App {
       c("注释/取消注释", "编辑", () => this.execCmd(toggleComment)),
       c("录制/停止宏", "宏", () => this.execCmd(toggleRecordMacro)),
       c("播放宏", "宏", () => this.execCmd(runMacro)),
-      c("宏管理…", "宏", () => { const v = this.view; if (v) macroManagerDialog(v, (m) => { this.statusEls.pos.textContent = m; }); }),
+      c("宏管理…", "宏", () => { const v = this.curView; if (v) macroManagerDialog(v, (m) => { this.statusEls.pos.textContent = m; }); }),
       c("代码片段…", "工具", () => snippetManagerDialog()),
       c("剪贴板历史…", "编辑", () => this.openClipHist()),
       c("行排序…", "编辑", () => this.sortDialog()),
@@ -1992,8 +2884,47 @@ export class App {
     this.palette.open(this.commandRegistry());
   }
 
+  // ⌘P 快速打开文件：扫描当前目录 + 最近文件 + 已打开标签
+  private async openQuickOpen() {
+    const files: QuickOpenFile[] = [];
+    const seen = new Set<string>();
+    const add = (p: string) => {
+      if (seen.has(p)) return;
+      seen.add(p);
+      files.push({ path: p, name: p.split("/").pop() || p });
+    };
+    for (const d of this.docs.values()) if (d.path) add(d.path);
+    for (const p of getRecent()) add(p);
+    const root = this.tree.getCurDir();
+    if (root) {
+      try {
+        await this.scanQuickDir(root, files, seen, 0);
+      } catch {
+        /* ignore */
+      }
+    }
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    this.quickOpen.open(files, (f) => {
+      void this.openFile(f.path);
+    });
+  }
+
+  private async scanQuickDir(dir: string, files: QuickOpenFile[], seen: Set<string>, depth: number) {
+    if (depth > 6 || files.length > 4000) return;
+    const entries = await invoke<FileEntry[]>("list_dir", { path: dir }).catch(() => []);
+    for (const e of entries) {
+      if (!this.showHidden && e.name.startsWith(".")) continue;
+      if (e.is_dir) {
+        await this.scanQuickDir(e.path, files, seen, depth + 1);
+      } else if (!seen.has(e.path)) {
+        seen.add(e.path);
+        files.push({ path: e.path, name: e.name });
+      }
+    }
+  }
+
   private gotoLineDialog() {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc || doc.mode === "hex") return;
     const total = v.state.doc.lines;
@@ -2025,7 +2956,7 @@ export class App {
   }
 
   private numSeqDialog() {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc || doc.mode === "hex" || v.state.selection.main.empty) {
       this.alert(t("请先用鼠标选择多行（可配合列模式）后再插入数字序列。"));
@@ -2060,7 +2991,7 @@ export class App {
   }
 
   private sortDialog() {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc || doc.mode === "hex") return;
     const modal = document.createElement("div");
@@ -2100,7 +3031,7 @@ export class App {
   private toggleColumn() {
     const doc = this.active;
     if (!doc || doc.mode === "hex") return;
-    const v = this.view;
+    const v = this.curView;
     if (!v) return;
     const next = !isColumnMode();
     setColumnMode(next);
@@ -2148,7 +3079,7 @@ export class App {
   // ---- line cleanup + hard wrap ----
 
   private transformSelectedLines(fn: (lines: string[]) => string[]) {
-    const v = this.view;
+    const v = this.curView;
     if (!v) return;
     const doc = v.state.doc;
     const sel = v.state.selection.main;
@@ -2204,7 +3135,7 @@ export class App {
   }
 
   private rewrapDialog() {
-    const v = this.view;
+    const v = this.curView;
     if (!v) return;
     const modal = document.createElement("div");
     modal.className = "modal-mask";
@@ -2233,7 +3164,7 @@ export class App {
   }
 
   private rewrap(width: number, join: boolean) {
-    const v = this.view;
+    const v = this.curView;
     if (!v) return;
     const doc = v.state.doc;
     const sel = v.state.selection.main;
@@ -2260,7 +3191,7 @@ export class App {
   // ---- insert date/time + character table ----
 
   private insertAtCursor(text: string) {
-    const v = this.view;
+    const v = this.curView;
     if (!v) return;
     const sel = v.state.selection.main;
     v.dispatch({
@@ -2282,7 +3213,7 @@ export class App {
   }
 
   private insertDateTimeDialog() {
-    const v = this.view;
+    const v = this.curView;
     if (!v) return;
     const presets = [
       "YYYY-MM-DD",
@@ -2325,7 +3256,7 @@ export class App {
   }
 
   private charTableDialog() {
-    const v = this.view;
+    const v = this.curView;
     if (!v) return;
     const ascii: string[] = [];
     for (let c = 32; c <= 126; c++) ascii.push(String.fromCharCode(c));
@@ -2355,7 +3286,7 @@ export class App {
   // ---- list all matches in current file ----
 
   private listMatchesInFile() {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc || doc.mode === "hex") {
       this.alert(t("请先打开一个文本文件。"));
@@ -2451,22 +3382,24 @@ export class App {
     qInput.select();
   }
 
-  private splitReadOnlyExt(doc: Document): import("@codemirror/state").Extension[] {
-    const lang = doc.path ? langForPath(doc.path) : { ext: [], name: t("纯文本") };
+  // 分屏（右侧）编辑器扩展：可编辑版（与主视图同款高亮/行号/折叠，无主视图专属监听）
+  private splitExt(doc: Document): import("@codemirror/state").Extension[] {
+    const langPath = this.docLangPath(doc);
+    const lang = langPath ? langForPath(langPath) : { ext: [], name: t("纯文本") };
     const base: import("@codemirror/state").Extension[] = [
       lineNumbers(),
       highlightActiveLineGutter(),
       highlightSpecialChars(),
+      history(),
       drawSelection(),
       EditorState.allowMultipleSelections.of(true),
-      syntaxHighlighting(defaultHighlightStyle),
+      this.syntaxCompartment.of(highlightForTheme()),
       highlightSelectionMatches(),
       searchHighlight(),
       foldGutter(),
-      EditorState.readOnly.of(true),
-      EditorView.editable.of(false),
       wrapCompartment.of(doc.wrap ? EditorView.lineWrapping : []),
       wsCompartment.of(doc.showWs ? [highlightWhitespace()] : []),
+      langCompartment.of(isMarkdownDoc(this.docLangPath(doc), doc.name) ? markdown({ base: markdownLanguage }) : lang.ext),
       themeBase(),
     ];
     if (lang.ext) base.push(lang.ext);
@@ -2477,23 +3410,35 @@ export class App {
     if (this.splitView) return;
     this.splitPanel.classList.remove("hidden");
     this.mainPanel.classList.add("split-mode");
-    this.splitPanel.innerHTML =
-      `<div id="split-head"><span id="split-name"></span>` +
-      `<button id="split-close" title="${t("关闭分屏")}">✕</button></div>` +
-      `<div id="split-host"></div>`;
-    this.splitPanel.querySelector("#split-close")!.addEventListener("click", () => this.toggleSplit());
+    // 无标题条：右栏内容与左栏从同一水平线开始（关闭分屏用 ⌘\ 或菜单）
+    this.splitPanel.innerHTML = `<div id="split-host"></div>`;
     const host = this.splitPanel.querySelector("#split-host")!;
     this.splitView = new EditorView({ parent: host, state: EditorState.create({ doc: "", extensions: [] }) });
   }
 
   private renderSplit(doc: Document) {
     if (!this.splitView) return;
-    const nameEl = this.splitPanel.querySelector("#split-name");
-    if (nameEl) nameEl.textContent = doc.path || doc.name;
     this.splitView.setState(EditorState.create({
       doc: doc.state ? doc.state.doc : "",
-      extensions: this.splitReadOnlyExt(doc),
+      // 可编辑 + 右侧编辑实时同步回主视图（splitSyncing 防循环）
+      extensions: [
+        ...this.splitExt(doc),
+        EditorView.updateListener.of((u) => this.onSplitUpdate(u)),
+      ],
     }));
+  }
+
+  // 右侧分屏编辑 → 整体同步回主视图（主视图 updateListener 会同步 doc.state/dirty/预览）
+  private onSplitUpdate(u: import("@codemirror/view").ViewUpdate) {
+    if (!this.splitView || !u.docChanged || this.splitSyncing) return;
+    const main = this.view;
+    if (!main) return;
+    this.splitSyncing = true;
+    try {
+      main.dispatch({ changes: { from: 0, to: main.state.doc.length, insert: u.state.doc.toString() } });
+    } finally {
+      this.splitSyncing = false;
+    }
   }
 
   private destroySplit() {
@@ -2512,11 +3457,249 @@ export class App {
     this.renderSplit(doc);
   }
 
+  // 当前激活编辑器视图（平铺时=激活格，单格=主视图）
+  private get curView(): EditorView | null {
+    if (this.tileMode) {
+      const cell = this.activeId ? this.tileCells.get(this.activeId) : null;
+      return cell?.view ?? null;
+    }
+    return this.view;
+  }
+
+  // ---------------------------------------------------------------- tile (多标签平铺)
+
+  private tileTags(dir: "v" | "h") {
+    // 混合平铺：文本文档 + 终端 tab（文档在前、终端按打开顺序）
+    const items: Array<{ kind: "doc"; id: string; doc: Document } | { kind: "term"; id: string; term: RemoteTerm }> = [];
+    for (const id of this.tabOrder) {
+      const doc = this.docs.get(id);
+      if (doc && doc.mode === "text") items.push({ kind: "doc", id, doc });
+    }
+    for (const id of this.termOrder) {
+      const term = this.terms.get(id);
+      if (term) items.push({ kind: "term", id, term });
+    }
+    if (items.length < 2) {
+      this.alert(t("至少需要打开 2 个标签才能平铺。"));
+      return;
+    }
+    if (this.tileMode) {
+      // 已在平铺：仅切换方向/重排，保留格子与格内预览状态
+      this.tileMode = dir;
+      this.layoutTiles(this.tileCells.size + this.termTileCells.size);
+      return;
+    }
+    const list = items.slice(0, 12); // 上限 12 格，超出留在标签栏
+    this.tileMode = dir;
+    this.tileCells.clear();
+    this.termTileCells.clear();
+    this.tileArea.innerHTML = "";
+    if (this.previewOn) this.closePreview(true);
+    this.activeTermId = null;
+    this.hexEl.classList.add("hidden");
+    this.hexRoot.classList.add("hidden");
+    this.editorEl.classList.add("hidden");
+    this.emptyStateEl.classList.add("hidden");
+    // 平铺时顶部集中标签栏隐藏（格子标题条即标签，SecureCRT 风格）
+    this.tabbarEl.classList.add("hidden");
+    this.tileArea.classList.remove("hidden");
+    for (const item of list) {
+      if (item.kind === "doc") {
+        const doc = item.doc;
+        const cell = new TileCell(
+          doc,
+          (id) => this.activateTileCell(id),
+          (id) => void this.closeTab(id),
+          (x, y, d) => this.showTabMenu(x, y, d as Document),
+        );
+        this.tileCells.set(doc.id, cell);
+        this.tileArea.appendChild(cell.el);
+      } else {
+        const term = item.term;
+        const cell = new TerminalTileCell(
+          term.id,
+          term.title,
+          term.el,
+          (id) => this.activateTileTerm(id),
+          (id) => this.closeTerm(id),
+          (x, y) => this.showTermMenu(x, y, term.id),
+        );
+        this.termTileCells.set(term.id, cell);
+        this.tileArea.appendChild(cell.el);
+      }
+    }
+    // 终端的 xterm 已全部迁入格子，原终端区域隐藏
+    this.termArea.classList.add("hidden");
+    this.layoutTiles(list.length);
+    this.updateTileMore(items.length, list.length);
+    const curTerm = this.activeTermId ? this.terms.get(this.activeTermId) : null;
+    const curDoc = this.docs.get(this.activeId ?? "");
+    const target =
+      curTerm && this.termTileCells.has(curTerm.id)
+        ? curTerm.id
+        : curDoc && curDoc.mode === "text" && this.tileCells.has(curDoc.id)
+          ? curDoc.id
+          : list[0].id;
+    if (this.termTileCells.has(target)) this.activateTileTerm(target);
+    else this.activateTileCell(target);
+  }
+
+  // 平铺模式下激活终端格子（SSH 会话继续，远程目录树联动）
+  private activateTileTerm(id: string) {
+    if (!this.termTileCells.has(id)) {
+      // 未入格的终端（超出平铺上限等）：合并回单格并正常激活
+      this.mergeTags();
+      this.activateTerm(id);
+      return;
+    }
+    const sid = this.termSite.get(id);
+    if (sid) this.remote.activateSession(sid);
+    this.activeId = null;
+    this.activeTermId = id;
+    this.tileCells.forEach((c, cid) => c.el.classList.toggle("active", cid === id));
+    this.termTileCells.forEach((c, cid) => c.el.classList.toggle("active", cid === id));
+    const term = this.terms.get(id);
+    if (term) {
+      this.statusEls.path.textContent = term.title;
+      this.statusEls.lang.textContent = "";
+      this.updateStatus();
+    }
+    requestAnimationFrame(() => term?.focus());
+  }
+
+  // 平铺数量超过上限时的提示条（未入格标签需合并后访问）
+  private updateTileMore(total: number, shown: number) {
+    this.tileArea.querySelector(".tile-more")?.remove();
+    if (total > shown) {
+      const bar = document.createElement("div");
+      bar.className = "tile-more";
+      bar.textContent = t("共 {n} 个标签，已平铺前 {m} 个，其余标签合并后查看", { n: total, m: shown });
+      bar.addEventListener("click", () => this.mergeTags());
+      this.tileArea.insertAdjacentElement("beforebegin", bar);
+    }
+  }
+
+  private layoutTiles(n: number) {
+    if (this.tileMode === "h") {
+      const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+      const rows = Math.max(1, Math.ceil(n / cols));
+      this.tileArea.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+      this.tileArea.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    } else {
+      const rows = Math.max(1, Math.ceil(Math.sqrt(n)));
+      const cols = Math.max(1, Math.ceil(n / rows));
+      this.tileArea.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+      this.tileArea.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    }
+  }
+
+  private activateTileCell(id: string) {
+    if (!this.tileCells.has(id)) {
+      // 未入格的标签（超出平铺上限等）：合并回单格并正常激活
+      this.mergeTags();
+      this.activate(id);
+      return;
+    }
+    const prevId = this.activeId;
+    if (prevId && prevId !== id) {
+      const prevCell = this.tileCells.get(prevId);
+      if (prevCell && this.docs.get(prevId)) {
+        this.docs.get(prevId)!.scrollTop = prevCell.view.scrollDOM.scrollTop;
+      }
+    }
+    this.activeId = id;
+    this.activeTermId = null;
+    this.tileCells.forEach((c, cid) => c.el.classList.toggle("active", cid === id));
+    this.termTileCells.forEach((c) => c.el.classList.remove("active"));
+    const doc = this.docs.get(id);
+    if (doc) {
+      const langPath = this.docLangPath(doc);
+      this.statusEls.lang.textContent = langPath ? langForPath(langPath).name : t("纯文本");
+      this.statusEls.path.textContent = doc.path || "";
+      this.updateStatus();
+      this.syncMdToolbar();
+    }
+    this.renderTabs();
+    const cell = this.tileCells.get(id);
+    if (cell) requestAnimationFrame(() => cell.focus());
+  }
+
+  private mergeTags() {
+    if (!this.tileMode) return;
+    const active = this.activeId;
+    if (active) {
+      const cell = this.tileCells.get(active);
+      const doc = this.docs.get(active);
+      if (cell && doc) doc.scrollTop = cell.view.scrollDOM.scrollTop;
+    }
+    // 终端格子：term.el 迁回终端区域（display 先复位，由激活分支决定显隐）
+    this.termTileCells.forEach((cell, tid) => {
+      const term = this.terms.get(tid);
+      if (term) {
+        term.el.style.display = "none";
+        this.termArea.appendChild(term.el);
+      }
+      cell.destroy();
+    });
+    this.termTileCells.clear();
+    this.tileCells.forEach((c) => c.destroy());
+    this.tileCells.clear();
+    this.tileMode = null;
+    this.tileArea.classList.add("hidden");
+    this.tileArea.innerHTML = "";
+    this.tileArea.querySelector(".tile-more")?.remove();
+    document.querySelector(".tile-more")?.remove();
+    this.tabbarEl.classList.remove("hidden");
+    // 合并后优先恢复终端视图（激活的终端还在则继续显示）
+    const nextTerm =
+      (this.activeTermId && this.terms.has(this.activeTermId)
+        ? this.activeTermId
+        : this.termOrder.find((i) => this.terms.has(i))) ?? null;
+    if (nextTerm) {
+      this.editorEl.classList.add("hidden");
+      this.hexEl.classList.add("hidden");
+      this.hexRoot.classList.add("hidden");
+      this.emptyStateEl.classList.add("hidden");
+      this.mdToolbarEl.classList.add("hidden");
+      this.termArea.classList.remove("hidden");
+      for (const [tid, term] of this.terms) {
+        term.el.style.display = tid === nextTerm ? "" : "none";
+      }
+      this.renderTabs();
+      const term = this.terms.get(nextTerm);
+      requestAnimationFrame(() => window.setTimeout(() => term?.focus(), 60));
+      this.updateStatus();
+      return;
+    }
+    this.termArea.classList.add("hidden");
+    this.editorEl.classList.remove("hidden");
+    const next = this.active && this.active.mode === "text"
+      ? this.active.id
+      : (this.tabOrder.find((i) => this.docs.get(i)?.mode === "text") ?? null);
+    if (next) {
+      this.activate(next);
+    } else {
+      this.closePreview();
+      this.hexEl.classList.add("hidden");
+      this.emptyStateEl.classList.remove("hidden");
+      this.renderEmptyRecent();
+      this.statusEls.path.textContent = "";
+      this.statusEls.pos.textContent = "Ln 1, Col 1";
+      this.statusEls.lang.textContent = "";
+      this.statusEls.encoding.textContent = "";
+      this.statusEls.size.textContent = "";
+    }
+    this.renderTabs();
+  }
+
   private toggleSplit() {
+    if (this.tileMode) this.mergeTags();
     if (this.splitView) {
       this.destroySplit();
       return;
     }
+    // 分屏与 Markdown 预览共用右侧空间，互斥：开分屏先关预览
+    if (this.previewOn) this.closePreview();
     const doc = this.active;
     if (!doc || doc.mode === "hex") { this.alert(t("十六进制模式不支持分屏，请切换回文本模式。")); return; }
     if (!this.view) return;
@@ -2526,6 +3709,20 @@ export class App {
   }
 
   private togglePreview() {
+    if (this.tileMode) {
+      const doc = this.active;
+      const cell = this.activeId ? this.tileCells.get(this.activeId) : null;
+      if (!cell || !doc || doc.mode === "hex") {
+        this.alert(t("十六进制模式不支持预览，请切换回文本模式。"));
+        return;
+      }
+      if (!isMarkdownDoc(this.docLangPath(doc), doc.name)) {
+        this.alert(t("当前文件不是 Markdown，无法预览。"));
+        return;
+      }
+      cell.togglePreview();
+      return;
+    }
     if (this.previewOn) {
       this.closePreview();
       return;
@@ -2535,10 +3732,12 @@ export class App {
       this.alert(t("十六进制模式不支持预览，请切换回文本模式。"));
       return;
     }
-    if (!isMarkdownDoc(doc.path, doc.name)) {
+    if (!isMarkdownDoc(this.docLangPath(doc), doc.name)) {
       this.alert(t("当前文件不是 Markdown，无法预览。"));
       return;
     }
+    // 预览与分屏共用右侧空间，互斥：开预览先关分屏
+    if (this.splitView) this.destroySplit();
     this.openPreview();
   }
 
@@ -2546,35 +3745,45 @@ export class App {
     const view = this.view;
     if (!view) return;
     this.previewPanel.classList.remove("hidden");
-    this.preview = new MarkdownPreview(this.previewPanel, t("关闭预览"));
-    this.preview.onClose = () => this.closePreview();
+    this.preview = new MarkdownPreview(this.previewPanel);
+    this.preview.onTaskToggle = (line, checked) => this.applyTaskToggle(line, checked);
     this.preview.attach(view);
     this.previewOn = true;
     this.prefPreview = true;
     try { localStorage.setItem("uec.preview", "1"); } catch { /* ignore */ }
     this.refreshPreview();
+    this.syncPreviewBtn();
   }
 
-  private closePreview() {
+  private closePreview(keepPref = false) {
     if (this.preview) {
       this.preview.destroy();
       this.preview = null;
     }
     this.previewPanel.classList.add("hidden");
     this.previewOn = false;
-    this.prefPreview = false;
-    try { localStorage.setItem("uec.preview", "0"); } catch { /* ignore */ }
+    if (!keepPref) {
+      this.prefPreview = false;
+      try { localStorage.setItem("uec.preview", "0"); } catch { /* ignore */ }
+    }
+    this.syncPreviewBtn();
   }
 
   private refreshPreview() {
     if (!this.previewOn || !this.preview) return;
     const doc = this.active;
-    if (!doc || !isMarkdownDoc(doc.path, doc.name)) {
-      this.closePreview();
+    if (!doc || !isMarkdownDoc(this.docLangPath(doc), doc.name)) {
+      this.closePreview(true); // 临时离开预览文件：保留预览意图，切回时自动恢复
       return;
     }
     const src = this.view ? this.view.state.doc.toString() : "";
-    this.preview.show(src, doc.path || doc.name);
+    this.preview.show(src);
+    // 渲染后按当前光标位置对齐预览
+    const st = this.view?.state;
+    if (st) {
+      const head = st.selection.main.head;
+      this.preview.syncCursor(st.doc.lineAt(head).number, st.doc.lines);
+    }
   }
 
   private schedulePreview() {
@@ -2614,24 +3823,12 @@ export class App {
     try {
       const text = doc.state.doc.toString();
       await invoke("save_text_file", { path: doc.path, text, encoding: doc.encoding, line_ending: doc.lineEnding, backup: true });
-      doc.dirty = false;
+      this.markSaved(doc);
       doc.size = new TextEncoder().encode(text).length;
-      this.updateTabDot(doc);
       await invoke("clear_recovery", { key: doc.id }).catch(() => {});
       return true;
     } catch {
       return false;
-    }
-  }
-
-  private toggleTabWrap() {
-    const bar = document.getElementById("tabbar")!;
-    const on = !bar.classList.contains("wrap");
-    bar.classList.toggle("wrap", on);
-    try {
-      localStorage.setItem("uec.tabwrap", on ? "1" : "");
-    } catch {
-      /* ignore */
     }
   }
 
@@ -2676,7 +3873,7 @@ export class App {
   }
 
   private applyTool(tool: (t: string) => ToolResult) {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc || doc.mode === "hex") return;
     const sel = v.state.selection.main;
@@ -2698,7 +3895,7 @@ export class App {
   }
 
   private openSpellCheck() {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc || doc.mode === "hex") return;
     spellCheckDialog(v, (word, replacement) => {
@@ -2716,7 +3913,7 @@ export class App {
   }
 
   private wordCountDialog() {
-    const v = this.view;
+    const v = this.curView;
     const doc = this.active;
     if (!v || !doc || doc.mode === "hex") return;
     const sel = v.state.selection.main;
@@ -2748,6 +3945,7 @@ export class App {
   }
 
   private async toggleMode() {
+    if (this.tileMode) this.mergeTags();
     const doc = this.active;
     if (!doc) return;
     if (doc.mode === "text") {
@@ -2802,7 +4000,8 @@ export class App {
       if (!this.view) this.view = new EditorView({ parent: this.mainPanel });
       this.view.setState(state);
       this.view.focus();
-      this.statusEls.lang.textContent = doc.path ? langForPath(doc.path).name : t("纯文本");
+      const langPath = this.docLangPath(doc);
+      this.statusEls.lang.textContent = langPath ? langForPath(langPath).name : t("纯文本");
     }
     this.updateModeButton();
     this.renderTabs();
@@ -2830,7 +4029,7 @@ export class App {
     const sb = document.getElementById("sidebar")!;
     const collapsed = sb.classList.toggle("collapsed");
     if (collapsed) {
-      sb.style.width = "18px";
+      sb.style.width = "0px";
       try { localStorage.setItem("uec.sidebar.collapsed", "1"); } catch { /* ignore */ }
     } else {
       const saved = parseInt(localStorage.getItem("uec.sidebar.w") || "", 10);
@@ -2839,17 +4038,18 @@ export class App {
     }
     const btn = document.querySelector<HTMLElement>('[data-action="tree"]');
     btn?.classList.toggle("active", !collapsed);
-    const toggle = document.getElementById("sb-toggle");
-    if (toggle) toggle.textContent = collapsed ? "›" : "‹";
   }
 
   private restoreSidebarCollapsed() {
     const sb = document.getElementById("sidebar")!;
-    if (localStorage.getItem("uec.sidebar.collapsed") !== "1") return;
-    sb.classList.add("collapsed");
-    sb.style.width = "18px";
-    const toggle = document.getElementById("sb-toggle");
-    if (toggle) toggle.textContent = "›";
+    const collapsed = localStorage.getItem("uec.sidebar.collapsed") === "1";
+    if (collapsed) {
+      sb.classList.add("collapsed");
+      sb.style.width = "0px";
+    }
+    // 按钮高亮与侧边栏实际状态同步（展开=active 带色，收起=不高亮）
+    const btn = document.querySelector<HTMLElement>('[data-action="tree"]');
+    btn?.classList.toggle("active", !collapsed);
   }
 
   private applyTheme(id: string) {
@@ -2862,8 +4062,18 @@ export class App {
       root.setAttribute("data-theme", id);
     }
     localStorage.setItem("uec.theme", id);
+    // 已打开的远程终端同步跟随主题配色
+    this.terms.forEach((tm) => tm.updateTheme());
     const btn = document.querySelector<HTMLElement>('[data-action="theme"]');
     btn?.classList.toggle("active", isDarkTheme(id));
+    // 深/浅主题切换时同步替换所有文档与分屏的语法高亮配色
+    const hl = this.syntaxCompartment.reconfigure(highlightForTheme());
+    for (const d of this.docs.values()) {
+      if (d.state) d.state = d.state.update({ effects: hl }).state;
+    }
+    const act = this.active;
+    if (act && act.state) this.view?.setState(act.state);
+    this.splitView?.dispatch({ effects: hl });
     this.view?.requestMeasure();
   }
 
@@ -2898,13 +4108,37 @@ export class App {
       }
       doc.path = path;
       doc.name = path.split(/[\\/]/).pop() || path;
+      if (saveAs) {
+        // 另存为本地后脱离归档/远程上下文
+        doc.archive = undefined;
+        doc.remote = undefined;
+      }
       if (doc.mode === "text" && !doc.isBinary) {
         const text = doc.state!.doc.toString();
         doc.state = EditorState.create({ doc: text, extensions: this.extForDoc(doc) });
-        if (this.view) this.view.setState(doc.state);
+        const cv = this.curView;
+        if (cv) cv.setState(doc.state);
+        if (this.view && this.view !== cv) this.view.setState(doc.state);
       }
     }
     try {
+      // 归档条目保存：重建归档并回写远程（不走本地临时文件覆盖）
+      if (doc.archive) {
+        const text = doc.state!.doc.toString();
+        await invoke("archive_update", { path: doc.archive.tmpPath, entryName: doc.archive.entry, newContent: text });
+        if (doc.remote) {
+          if (doc.remote.proto === "sftp") {
+            await invoke("sftp_upload", { id: doc.remote.id, localPath: doc.archive.tmpPath, remotePath: doc.remote.path, taskId: newTransferId() });
+          } else {
+            await invoke("ftp_upload", { id: doc.remote.id, localPath: doc.archive.tmpPath, remoteName: doc.archive.archiveName, taskId: newTransferId() });
+          }
+        }
+        this.markSaved(doc);
+        doc.size = new TextEncoder().encode(text).length;
+        this.renderTabs();
+        this.updateStatus();
+        return true;
+      }
       if (doc.mode === "hex") {
         await this.hex.save();
         doc.hexBytes = this.hex.getBytes();
@@ -2912,15 +4146,15 @@ export class App {
       } else {
         const text = doc.state!.doc.toString();
         await invoke("save_text_file", { path, text, encoding: doc.encoding, line_ending: doc.lineEnding, backup: true });
-        doc.dirty = false;
+        this.markSaved(doc);
         doc.size = new TextEncoder().encode(text).length;
       }
       if (doc.remote) {
         try {
           if (doc.remote.proto === "sftp") {
-            await invoke("sftp_upload", { id: doc.remote.id, localPath: path, remotePath: doc.remote.path });
+            await invoke("sftp_upload", { id: doc.remote.id, localPath: path, remotePath: doc.remote.path, taskId: newTransferId() });
           } else {
-            await invoke("ftp_upload", { id: doc.remote.id, localPath: path });
+            await invoke("ftp_upload", { id: doc.remote.id, localPath: path, taskId: newTransferId() });
           }
         } catch (e) {
           this.alert(t("已保存本地，但写回远程失败：") + `\n${e}`);
@@ -2983,6 +4217,7 @@ export class App {
         lineEnding, isBinary: false, mode: "text",
         dirty: false, size: file.size, truncated: false,
       };
+      doc.savedContent = text;
       doc.state = EditorState.create({ doc: text, extensions: this.extForDoc(doc) });
       this.addDoc(doc);
     });
@@ -3042,6 +4277,31 @@ export class App {
     this.tabOrder = this.tabOrder.filter((i) => i !== id);
     this.saveSessionNow();
     this.closeSplitIfNeeded(id);
+    if (this.tileMode) {
+      const cell = this.tileCells.get(id);
+      cell?.destroy();
+      this.tileCells.delete(id);
+      if (this.tileCells.size + this.termTileCells.size <= 1) {
+        // 剩 0/1 格自动合并回单格（mergeTags 内部激活剩余的文档/终端或进入空状态）
+        this.mergeTags();
+        this.renderTabs();
+        return;
+      }
+      this.layoutTiles(this.tileCells.size + this.termTileCells.size);
+      const total =
+        [...this.docs.values()].filter((d) => d.mode === "text").length + this.terms.size;
+      this.updateTileMore(total, this.tileCells.size + this.termTileCells.size);
+      if (this.activeId === id) {
+        const keys = [...this.tileCells.keys()];
+        if (keys.length) this.activateTileCell(keys[keys.length - 1]);
+        else {
+          const tKeys = [...this.termTileCells.keys()];
+          if (tKeys.length) this.activateTileTerm(tKeys[tKeys.length - 1]);
+        }
+      }
+      this.renderTabs();
+      return;
+    }
     const remaining = [...this.docs.values()];
     if (this.activeId === id) {
       this.activeId = remaining.length ? remaining[remaining.length - 1].id : null;
@@ -3062,8 +4322,149 @@ export class App {
     this.renderTabs();
   }
 
-  private onHexDirty() {
-    const doc = this.active;
+  // ---------------------------------------------------------------- remote term
+
+  openTerminal(params: TermParams, initialDir?: string, siteId?: string) {
+    const accountName = siteId ? this.remote.getSiteName(siteId) : params.host;
+    const term = new RemoteTerm(params.host, params.username, accountName);
+    this.terms.set(term.id, term);
+    if (siteId) this.termSite.set(term.id, siteId);
+    this.termOrder.push(term.id);
+    term.onExit = () => this.renderTabs();
+    // 远程 shell 标题（如 root@hh6:~）只更新悬停提示，不覆盖固定 tab 名
+    term.onTitle = (title) => {
+      if (!title) return;
+      term.remoteTitle = title;
+      const tab = this.tabbarEl.querySelector<HTMLElement>(`[data-tab="${term.id}"] .tab-name`);
+      if (tab) tab.title = title;
+      const cell = this.termTileCells.get(term.id);
+      if (cell) {
+        const t = cell.el.querySelector<HTMLElement>(".tile-title");
+        if (t) t.title = title;
+      }
+    };
+    this.termArea.appendChild(term.el);
+    void term.start({ ...params, initialDir });
+    this.renderTabs();
+    this.activateTerm(term.id);
+  }
+
+  // 关闭某台服务器对应的全部终端（远程会话断开时联动）
+  private closeTermsBySite(siteId: string) {
+    for (const [tid, sid] of [...this.termSite]) {
+      if (sid === siteId) this.closeTerm(tid);
+    }
+  }
+
+  private activateTerm(id: string) {
+    if (this.tileMode) this.mergeTags();
+    if (this.previewOn) this.closePreview(true);
+    // 终端切换联动：远程目录树跟随当前终端对应的服务器会话
+    const sid = this.termSite.get(id);
+    if (sid) this.remote.activateSession(sid);
+    this.activeId = null;
+    this.activeTermId = id;
+    this.editorEl.classList.add("hidden");
+    this.hexEl.classList.add("hidden");
+    this.hexRoot.classList.add("hidden");
+    this.emptyStateEl.classList.add("hidden");
+    this.mdToolbarEl.classList.add("hidden");
+    this.termArea.classList.remove("hidden");
+    for (const [tid, term] of this.terms) {
+      term.el.style.display = tid === id ? "" : "none";
+    }
+    this.renderTabs();
+    const term = this.terms.get(id);
+    requestAnimationFrame(() => window.setTimeout(() => term?.focus(), 60));
+    this.updateStatus();
+  }
+
+  private termFindActive() {
+    const term = this.activeTermId ? this.terms.get(this.activeTermId) : null;
+    term?.showFind();
+  }
+
+  private termZoomActive(delta: number) {
+    const term = this.activeTermId ? this.terms.get(this.activeTermId) : null;
+    if (!term) return;
+    if (delta > 0) term.zoomIn();
+    else term.zoomOut();
+  }
+
+  // ⌘+/⌘- 字号调整：终端激活调终端字号，否则调编辑器字号（10–24px，持久化）
+  private zoomActive(delta: number) {
+    if (this.activeTermId) {
+      this.termZoomActive(delta);
+      return;
+    }
+    const root = document.documentElement;
+    const cur = parseInt(getComputedStyle(root).getPropertyValue("--ed-font"), 10) || 13;
+    const next = Math.min(24, Math.max(10, cur + delta));
+    root.style.setProperty("--ed-font", `${next}px`);
+    localStorage.setItem("uec.font", `${next}px`);
+  }
+
+  private closeTerm(id: string) {
+    const term = this.terms.get(id);
+    if (!term) return;
+    const siteId = this.termSite.get(id);
+    term.dispose();
+    this.terms.delete(id);
+    this.termSite.delete(id);
+    this.termOrder = this.termOrder.filter((x) => x !== id);
+    if (this.tileMode) {
+      const cell = this.termTileCells.get(id);
+      cell?.destroy();
+      this.termTileCells.delete(id);
+      if (this.activeTermId === id) this.activeTermId = null;
+      if (this.tileCells.size + this.termTileCells.size <= 1) {
+        // 剩 0/1 格自动合并（mergeTags 会激活剩余文档或终端）
+        this.mergeTags();
+        this.renderTabs();
+      } else {
+        this.layoutTiles(this.tileCells.size + this.termTileCells.size);
+        const total =
+          [...this.docs.values()].filter((d) => d.mode === "text").length + this.terms.size;
+        this.updateTileMore(total, this.tileCells.size + this.termTileCells.size);
+        if (this.activeTermId === null) {
+          const tKeys = [...this.termTileCells.keys()];
+          if (tKeys.length) this.activateTileTerm(tKeys[tKeys.length - 1]);
+          else {
+            const dKeys = [...this.tileCells.keys()];
+            if (dKeys.length) this.activateTileCell(dKeys[dKeys.length - 1]);
+          }
+        }
+        this.renderTabs();
+      }
+      // 该服务器最后一个终端关闭 → 联动断开会话
+      if (siteId && ![...this.termSite.values()].includes(siteId)) {
+        void this.remote.disconnect(siteId);
+      }
+      return;
+    }
+    if (this.activeTermId === id) {
+      this.activeTermId = null;
+      if (this.termOrder.length) {
+        this.activateTerm(this.termOrder[this.termOrder.length - 1]);
+      } else if (this.docs.size) {
+        const last = [...this.docs.values()].pop()!;
+        this.activate(last.id);
+      } else {
+        this.termArea.classList.add("hidden");
+        this.editorEl.classList.add("hidden");
+        this.hexEl.classList.add("hidden");
+        this.emptyStateEl.classList.remove("hidden");
+        this.renderEmptyRecent();
+      }
+    }
+    this.renderTabs();
+    // 该服务器最后一个终端关闭 → 联动断开会话（目录树/列表同步，MobaXterm session 语义）
+    if (siteId && ![...this.termSite.values()].includes(siteId)) {
+      void this.remote.disconnect(siteId);
+    }
+  }
+
+  private onHexDirty() {    const doc = this.active;
     if (!doc) return;
     doc.dirty = true;
     this.updateTabDot(doc);
@@ -3083,11 +4484,16 @@ export class App {
       closeTab: { key: "w" },
       sidebar: { key: "b" },
       column: { key: "l" },
+      preview: { key: "e", shift: true },
       palette: { key: "p", shift: true },
+      quickopen: { key: "p" },
       split: { key: "\\" },
       cliphist: { key: "v", shift: true },
       mode: { key: "m" },
-      print: { key: "p" },
+      print: { key: "" },
+      termFind: { key: "f" },
+      zoomIn: { key: "=", shift: true },
+      zoomOut: { key: "-" },
     };
     try {
       const stored = JSON.parse(localStorage.getItem("uec.keys") || "{}");
@@ -3104,14 +4510,28 @@ export class App {
   }
 
   private bindGlobalKeys() {
+    // 兼容不同键盘布局/输入法：⌘+ 的 key 可能是 "=" 或 "+"，⌘- 可能是 "-" 或 "_"
+    const normKey = (kk: string) => (kk === "+" ? "=" : kk === "_" ? "-" : kk);
+    window.addEventListener("resize", () => this.refreshTabMore());
     window.addEventListener("keydown", (e) => {
-      if (e.defaultPrevented) return;
-      const t = e.target as HTMLElement;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
+      if (e.defaultPrevented) {
+        // 系统/WebView 可能抢先处理 ⌘+/⌘-（页面缩放）：这里接管为字号调整。
+        // 但 CodeMirror keymap 已处理的 ⌘-/⇧⌘-（编辑位置跳转）不再当作缩小，避免双触发。
+        const kk = normKey(e.key.toLowerCase());
+        if ((e.metaKey || e.ctrlKey) && kk === "=") {
+          e.preventDefault();
+          this.zoomActive(1);
+        } else if ((e.metaKey || e.ctrlKey) && (kk === "-" || kk === "_")) {
+          const inEditor = !!(e.target as HTMLElement)?.closest?.(".cm-editor");
+          if (!inEditor) {
+            e.preventDefault();
+            this.zoomActive(-1);
+          }
+        }
         return;
       }
       const mod = e.metaKey || e.ctrlKey;
-      const k = e.key.toLowerCase();
+      const k = normKey(e.key.toLowerCase());
       if (!mod) {
         if (e.key === "F3") {
           e.preventDefault();
@@ -3120,16 +4540,53 @@ export class App {
         }
         return;
       }
-      const actions = ["new", "open", "save", "saveAs", "find", "replace", "goto", "closeTab", "sidebar", "column", "palette", "split", "cliphist", "mode", "print"] as const;
+      // 终端激活时优先匹配终端动作（xterm 聚焦在隐藏 textarea，不受下方输入框保护限制）
+      const termActive = this.activeTermId != null;
+      if (termActive) {
+        const allowed = ["closeTab", "sidebar", "palette", "quickopen", "new", "open", "mode", "termFind", "zoomIn", "zoomOut"];
+        for (const a of allowed) {
+          const b = this.shortcutBinding(a);
+          // 放大/缩小放宽 shift 与键值：⌘=、⌘+、⌘Shift+=、⌘-、⌘Shift+-、小键盘 + 均可
+          const compat =
+            (a === "zoomIn" && (k === "=" || k === "+")) || (a === "zoomOut" && k === "-");
+          if (b && b.key === k && (b.shift === e.shiftKey || compat)) {
+            e.preventDefault();
+            this.runAction(a);
+            return;
+          }
+        }
+        return;
+      }
+      const t = e.target as HTMLElement;
+      // 在文件中查找/替换（⌥⌘F / ⌥⌘H）：带 Alt 修饰，输入框聚焦时也可用
+      if (e.altKey && k === "f") { e.preventDefault(); this.openFileSearch(false); return; }
+      if (e.altKey && k === "h") { e.preventDefault(); this.openFileSearch(true); return; }
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
+        return;
+      }
+      const actions = ["new", "open", "save", "saveAs", "find", "replace", "goto", "closeTab", "sidebar", "column", "preview", "palette", "quickopen", "split", "cliphist", "mode", "print", "zoomIn", "zoomOut"] as const;
       for (const a of actions) {
         const b = this.shortcutBinding(a);
-        if (b && b.key === k && b.shift === e.shiftKey) {
+        // 放大/缩小放宽 shift 与键值（同终端分支）
+        const compat =
+          (a === "zoomIn" && (k === "=" || k === "+")) || (a === "zoomOut" && k === "-");
+        if (b && b.key === k && (b.shift === e.shiftKey || compat)) {
           e.preventDefault();
           this.runAction(a);
           return;
         }
       }
     });
+    window.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      // 统一 ESC：优先关闭下拉/右键菜单（捕获阶段，避免编辑器等吞掉按键）
+      const menu = document.querySelector<HTMLElement>(".dropdown-menu");
+      if (menu) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.closeMenus();
+      }
+    }, true);
     document.addEventListener("mousedown", (e) => {
       if ((e.target as HTMLElement).closest?.(".dropdown-menu")) return;
       this.closeMenus();

@@ -27,9 +27,14 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
 regex = "1"
 walkdir = "2"
 ftp = "3"
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 encoding_rs = "0.8"
+tar = "0.4"
+flate2 = "1"
+bzip2 = "0.4"
+zip = "2"
 
