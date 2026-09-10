@@ -339,9 +339,14 @@ export class App {
       this.openArchiveDoc(p, kind, entry, name), this.showHidden);
     this.hexRoot = this.hexEl;
     // 窗口重新获得焦点时刷新本地目录树（覆盖 Finder/终端等外部改动后切回的场景）
-    getCurrentWindow().onFocusChanged(({ payload }) => {
-      if (payload) this.tree?.refresh();
-    });
+    // 仅 Tauri 环境可用；纯浏览器或 e2e mock（__TAURI_INTERNALS__ 不完整）时安全跳过
+    try {
+      getCurrentWindow().onFocusChanged(({ payload }) => {
+        if (payload) this.tree?.refresh();
+      });
+    } catch {
+      /* 非 Tauri 环境 */
+    }
   }
 
   init() {
@@ -381,6 +386,8 @@ export class App {
 
   private bindCloseHook() {
     this.saveSessionSoon();
+    // 仅 Tauri 环境可用；纯浏览器（dev/e2e）下 getCurrentWindow 不存在，跳过
+    if (!inTauri()) return;
     try {
       let allowClose = false;
       getCurrentWindow().onCloseRequested(async (event) => {
@@ -1670,6 +1677,7 @@ export class App {
     const tabs: Record<string, string> = {
       local: "本地",
       outline: "大纲",
+      bookmarks: "书签",
       search: "搜索",
       remote: "远程",
     };
