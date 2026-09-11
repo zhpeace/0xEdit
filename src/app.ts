@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { open as dialogOpen, save as dialogSave } from "@tauri-apps/plugin-dialog";
@@ -1599,7 +1600,7 @@ export class App {
     ],
     "帮助": () => [
       ["检查更新…", () => this.checkForUpdate(), ""],
-      ["关于", () => this.alert(t("about.text")), ""],
+      ["关于", () => void this.showAbout(), ""],
     ],
     "语言": () => [
       ["简体中文", () => setLang("zh-CN"), "", () => getLang() === "zh-CN"],
@@ -1789,6 +1790,37 @@ export class App {
     const modal = document.createElement("div");
     modal.className = "modal-mask";
     modal.innerHTML = `<div class="modal"><div class="modal-title">${t("提示")}</div><div class="modal-body">${msg.replace(/\n/g, "<br/>")}</div><div class="modal-actions"><button class="primary modal-ok">${t("确定")}</button></div></div>`;
+    modal.querySelector(".modal-ok")!.addEventListener("click", () => modal.remove());
+    document.body.appendChild(modal);
+  }
+
+  private async showAbout() {
+    let ver = "dev";
+    try {
+      if (inTauri()) {
+        const v = await getVersion();
+        if (typeof v === "string" && v) ver = v;
+      }
+    } catch {
+      /* ignore */
+    }
+    const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const modal = document.createElement("div");
+    modal.className = "modal-mask";
+    modal.innerHTML = `<div class="modal" style="min-width:520px;max-width:660px;">
+      <div class="modal-title">${esc(t("about.title"))}</div>
+      <div class="modal-body" style="line-height:1.8;font-size:13px;max-height:70vh;overflow:auto;">
+        <div style="font-size:15px;font-weight:600;margin-bottom:2px;">0xEdit <span style="font-weight:400;color:#888;">v${esc(ver)}</span></div>
+        <div style="color:#888;margin-bottom:8px;">${esc(t("about.text"))}</div>
+        <div style="font-weight:600;margin:10px 0 4px;">${esc(t("about.features"))}</div>
+        <div>· ${esc(t("about.core"))}</div>
+        <div>· ${esc(t("about.files"))}</div>
+        <div>· ${esc(t("about.remote"))}</div>
+        <div>· ${esc(t("about.reliable"))}</div>
+        <div style="color:#888;margin-top:12px;">${esc(t("about.copyright"))}</div>
+      </div>
+      <div class="modal-actions"><button class="primary modal-ok">${esc(t("确定"))}</button></div>
+    </div>`;
     modal.querySelector(".modal-ok")!.addEventListener("click", () => modal.remove());
     document.body.appendChild(modal);
   }
