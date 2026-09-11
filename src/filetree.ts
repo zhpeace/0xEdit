@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { FileEntry } from "./types";
 import { isArchiveFile, archiveKindOf, buildArchiveTree, findArchiveChildren, type ArchiveEntry, type ArchiveNode } from "./archive";
 import { extFor, iconLabel } from "./fileicons";
@@ -81,6 +82,10 @@ export class FileTree {
       <div class="ctx-item hidden" data-arc="1" data-act="arc-extract">${t("提取到本地…")}</div>
       <div class="ctx-sep hidden" data-arc="1"></div>
       <div class="ctx-item" data-act="open">${t("打开")}</div>
+      <div class="ctx-item" data-act="openwith">${t("用默认应用打开")}</div>
+      <div class="ctx-item" data-act="reveal">${t("打开所在文件夹")}</div>
+      <div class="ctx-item" data-act="copy-to">${t("复制到…")}</div>
+      <div class="ctx-item" data-act="move-to">${t("移动到…")}</div>
       <div class="ctx-item" data-act="extract">${t("解压文件…")}</div>
       <div class="ctx-item" data-act="extract-here">${t("解压到当前文件夹")}</div>
       <div class="ctx-item" data-act="extract-named">${t("解压到 ")}<span data-name-label></span>\\</div>
@@ -675,6 +680,47 @@ export class FileTree {
       }
       return;
     }
+    if (act === "openwith") {
+      // 用系统默认应用打开（目录则在 Finder 中打开该目录）
+      try {
+        await openPath(path);
+      } catch (e) {
+        this.toast(t("打开失败：") + String(e));
+      }
+      return;
+    }
+    if (act === "reveal") {
+      // 在 Finder/资源管理器中显示该文件或目录
+      try {
+        await revealItemInDir(path);
+      } catch (e) {
+        this.toast(t("打开失败：") + String(e));
+      }
+      return;
+    }
+    if (act === "copy-to" || act === "move-to") {
+      // 复制/移动到指定目录（弹目录选择器；重名自动加序号不覆盖）
+      const dir = await openDialog({ directory: true, title: t("选择目标文件夹") });
+      if (!dir) return;
+      const target = Array.isArray(dir) ? dir[0] : dir;
+      // 移动是"删源"操作，先弹确认（显示源 → 目标），防误选目标目录
+      if (act === "move-to") {
+        const base = path.split("/").pop() || path;
+        const yes = await this.confirmModal(t("移动到…"), t("将 {name} 移动到 {dest}？", { name: base, dest: target }), t("移动"));
+        if (!yes) return;
+      }
+      try {
+        const dest = await invoke<string>(act === "copy-to" ? "copy_to" : "move_to", {
+          src: path,
+          destDir: target,
+        });
+        this.toast(act === "copy-to" ? t("已复制到 {dest}", { dest }) : t("已移动到 {dest}", { dest }));
+        if (act === "move-to") this.refreshAll();
+      } catch (e) {
+        this.toast(t("操作失败：") + String(e));
+      }
+      return;
+    }
     const base = nm.replace(/(\.tar\.gz|\.tar\.bz2|\.tar\.xz|\.tar\.zst|\.tgz|\.tbz2|\.txz|\.tzst|\.zipx|\.zip|\.jar|\.war|\.ear|\.apk|\.aar|\.rar|\.7z|\.iso|\.cab|\.cpio|\.deb|\.rpm|\.zst|\.lz4|\.tar)$/i, "") || nm;
     const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
     const parent = idx >= 0 ? path.slice(0, idx) : ".";
@@ -750,6 +796,7 @@ export class FileTree {
         this.ctxIsDir
           ? t("确定删除目录 {name} 及其全部内容？", { name: base })
           : t("确定删除文件 {name}？", { name: base }),
+        t("删除"),
       );
       if (!yes) return;
       const ok = await invoke<boolean>("delete_local", { path, isDir: this.ctxIsDir })
@@ -847,7 +894,7 @@ export class FileTree {
     });
   }
 
-  private confirmModal(title: string, msg: string): Promise<boolean> {
+  private confirmModal(title: string, msg: string, okText?: string): Promise<boolean> {
     return new Promise((resolve) => {
       const mask = document.createElement("div");
       mask.className = "modal-mask";
@@ -855,7 +902,7 @@ export class FileTree {
         <div class="modal-title">${escapeHtml(title)}</div>
         <div class="modal-body" style="white-space:pre-wrap;word-break:break-word;">${escapeHtml(msg)}</div>
         <div class="modal-actions">
-          <button class="search-btn" id="ft-cfm-ok">${t("删除")}</button>
+          <button class="search-btn" id="ft-cfm-ok">${escapeHtml(okText || t("确定"))}</button>
           <button class="search-btn" id="ft-cfm-cancel">${t("取消")}</button>
         </div>
       </div>`;

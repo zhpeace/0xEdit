@@ -2466,6 +2466,102 @@ fn delete_local(path: String, is_dir: bool) -> Result<(), String> {
     }
 }
 
+/// 目标已存在时生成不覆盖的路径：file.txt → file (2).txt → file (3).txt …
+fn unique_dest(dest: &std::path::Path) -> std::path::PathBuf {
+    if !dest.exists() {
+        return dest.to_path_buf();
+    }
+    let parent = dest.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let name = dest
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "copy".to_string());
+    for i in 2.. {
+        let candidate = parent.join(format!("{name} ({i})"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
+fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+        for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let to = dst.join(entry.file_name());
+            let ty = entry.file_type().map_err(|e| e.to_string())?;
+            if ty.is_dir() {
+                copy_tree(&entry.path(), &to)?;
+            } else {
+                std::fs::copy(entry.path(), &to).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    } else {
+        std::fs::copy(src, dst).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+/// 复制到指定目录（重名自动加序号，不覆盖）
+#[tauri::command]
+fn copy_to(src: String, dest_dir: String) -> Result<String, String> {
+    let src_p = std::path::Path::new(&src);
+    if !src_p.exists() {
+        return Err("源路径不存在".to_string());
+    }
+    let dir = std::path::Path::new(&dest_dir);
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let name = src_p
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .ok_or_else(|| "无法确定文件名".to_string())?;
+    let base = dir.join(&name);
+    // 目录复制到自己内部会无限递归，禁止
+    if src_p.is_dir() && base.starts_with(src_p) {
+        return Err("目标不能位于源目录内部".to_string());
+    }
+    let dest = unique_dest(&base);
+    copy_tree(src_p, &dest)?;
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+/// 移动到指定目录（重名自动加序号；跨磁盘自动复制后删除）
+#[tauri::command]
+fn move_to(src: String, dest_dir: String) -> Result<String, String> {
+    let src_p = std::path::Path::new(&src);
+    if !src_p.exists() {
+        return Err("源路径不存在".to_string());
+    }
+    let dir = std::path::Path::new(&dest_dir);
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let name = src_p
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .ok_or_else(|| "无法确定文件名".to_string())?;
+    let base = dir.join(&name);
+    if base == src_p {
+        return Err("目标位置与原位置相同".to_string());
+    }
+    if src_p.is_dir() && base.starts_with(src_p) {
+        return Err("目标不能位于源目录内部".to_string());
+    }
+    let dest = unique_dest(&base);
+    if std::fs::rename(src_p, &dest).is_ok() {
+        return Ok(dest.to_string_lossy().into_owned());
+    }
+    // 跨设备/文件系统：复制后删除原位置
+    copy_tree(src_p, &dest)?;
+    if src_p.is_dir() {
+        std::fs::remove_dir_all(src_p).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::remove_file(src_p).map_err(|e| e.to_string())?;
+    }
+    Ok(dest.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 fn new_window(app: tauri::AppHandle) -> Result<(), String> {    use tauri::{WebviewUrl, WebviewWindowBuilder};
     let label = format!("win-{}", std::time::SystemTime::now()
@@ -2485,6 +2581,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(FtpState(Arc::new(Mutex::new(HashMap::new()))))
         .manage(SshState(Arc::new(Mutex::new(HashMap::new()))))
         .manage(remote_term::TermState(Mutex::new(HashMap::new())))
@@ -2542,6 +2639,8 @@ pub fn run() {
             create_local_dir,
             rename_local,
             delete_local,
+            copy_to,
+            move_to,
             write_binary_file,
             remote_term::open_remote_shell,
             remote_term::write_shell,

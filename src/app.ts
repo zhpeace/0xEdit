@@ -17,7 +17,7 @@ import { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } 
 import { highlightSelectionMatches, search, findNext, findPrevious, selectMatches, RegExpCursor } from "@codemirror/search";
 import type { Document, FileEntry } from "./types";
 import { langForPath } from "./langs";
-import { rectangleSelection, setColumnMode, isColumnMode } from "./rect";
+import { rectangleSelection, setColumnMode, isColumnMode, rectKeyboard } from "./rect";
 import { HexEditor, formatSize } from "./hex";
 import { FindBar, searchHighlight } from "./find";
 import { FileTree } from "./filetree";
@@ -84,6 +84,17 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 
 const inTauri = (): boolean =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+// 真实 Tauri 环境判定：__TAURI_INTERNALS__ 完整（含 metadata）才算。
+// e2e 测试的 mock 只提供 invoke，缺少 metadata，用于区分并跳过真实插件调用（如自动检查更新）。
+const isRealTauri = (): boolean => {
+  try {
+    const t = (window as unknown as { __TAURI_INTERNALS__?: { metadata?: unknown } }).__TAURI_INTERNALS__;
+    return !!t?.metadata;
+  } catch {
+    return false;
+  }
+};
 
 function decodeUint8(buf: Uint8Array, hint: string): string {
   let enc = hint || "utf-8";
@@ -382,6 +393,12 @@ export class App {
     this.loadHome();
     this.checkRecovery();
     void this.restoreSession();
+    // 启动后延迟静默检查更新：仅真实 Tauri 环境（e2e mock 无 metadata，跳过，避免弹窗干扰测试）
+    if (isRealTauri()) {
+      window.setTimeout(() => {
+        void this.checkForUpdate(true);
+      }, 5000);
+    }
   }
 
   private bindCloseHook() {
@@ -954,6 +971,7 @@ export class App {
       langCompartment.of(isMarkdownDoc(this.docLangPath(doc), doc.name) ? markdown({ base: markdownLanguage }) : lang.ext),
       themeBase(),
       rectangleSelection,
+      rectKeyboard,
       EditorView.updateListener.of((u) => this.onEditorUpdate(u)),
       keymap.of([
         ...defaultKeymap,
@@ -1769,11 +1787,11 @@ export class App {
 
   // ---------------------------------------------------------------- update
 
-  private async checkForUpdate() {
+  private async checkForUpdate(silent = false) {
     try {
       const update = await checkForUpdate();
       if (!update) {
-        this.alert(t("update.none"));
+        if (!silent) this.alert(t("update.none"));
         return;
       }
       const ok = await this.confirmUpdate(t("update.found", { version: update.version }));
@@ -1782,7 +1800,8 @@ export class App {
       await update.downloadAndInstall();
       await relaunch();
     } catch (e) {
-      this.alert(t("update.error") + "\n" + String(e));
+      // 静默检查（启动时）：失败不打扰用户，仅保留手动入口的报错提示
+      if (!silent) this.alert(t("update.error") + "\n" + String(e));
     }
   }
 

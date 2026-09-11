@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
 import { open as dialogOpen, save as dialogSave } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { t, onLangChange } from "./i18n";
 import {
   isArchiveFile, archiveKindOf, buildArchiveTree, findArchiveChildren,
@@ -260,6 +261,7 @@ export class RemoteBrowser {
         <div class="ctx-item" data-act="newdir">${t("新建文件夹")}</div>
         <div class="ctx-sep"></div>
         <div class="ctx-item" data-act="open">${t("打开")}</div>
+        <div class="ctx-item" data-act="openwith">${t("用默认应用打开")}</div>
         <div class="ctx-item" data-act="extract">${t("解压文件…")}</div>
         <div class="ctx-item" data-act="extract-here">${t("解压到下载目录")}</div>
         <div class="ctx-item" data-act="extract-named">${t("解压到 ")}<span data-name-label></span>\\</div>
@@ -396,6 +398,7 @@ export class RemoteBrowser {
       this.selectedPath = node.dataset.path || node.dataset.name!;
       (ctx.querySelector('[data-act="saveas"]') as HTMLElement).style.display = "";
       (ctx.querySelector('[data-act="open"]') as HTMLElement).style.display = this.ctxIsDir ? "none" : "";
+      (ctx.querySelector('[data-act="openwith"]') as HTMLElement).style.display = this.ctxIsDir ? "none" : "";
       (ctx.querySelector('[data-act="term-here"]') as HTMLElement).style.display = this.ctxIsDir ? "" : "none";
       // 归档解压/测试组仅对归档文件生效（WinRAR 风格）
       const isArcFile = isArchiveFile(node.dataset.name!);
@@ -431,6 +434,7 @@ export class RemoteBrowser {
           if (node && isArchiveFile(node.dataset.name!)) void this.enterRemoteArchiveRoot(node);
           else this.download(this.selectedPath);
         }
+        else if (act === "openwith") void this.openWithDefault(this.selectedPath);
         else if (act === "saveas") {
           if (this.ctxIsDir) void this.downloadDir(this.selectedPath);
           else this.saveAs(this.selectedPath);
@@ -1892,6 +1896,23 @@ export class RemoteBrowser {
       this.onOpenRemote(tmp, this.proto, this.id, full);
     } catch (e) {
       this.status(t("下载失败: {e}", { e: String(e) }));
+    }
+  }
+
+  // 下载远程文件为本地临时副本，并用系统默认应用打开（只读查看，改动不回传）
+  private async openWithDefault(full: string) {
+    if (!this.id || !full) return;
+    const name = full.split("/").pop() || full;
+    this.status(t("下载 {name}…", { name }));
+    try {
+      const taskId = newTransferId();
+      const tmp = this.isSftp()
+        ? await invoke<string>("sftp_download", { id: this.id, remotePath: full, taskId })
+        : await invoke<string>("ftp_download", { id: this.id, remoteName: full, taskId });
+      this.status(t("已用默认应用打开 {name}（临时副本，改动不会回传）", { name }));
+      await openPath(tmp);
+    } catch (e) {
+      this.status(t("打开失败: {e}", { e: String(e) }));
     }
   }
 

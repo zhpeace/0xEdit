@@ -8,6 +8,12 @@
     "core:window:allow-close",
     "core:window:allow-destroy",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }]
+    },
+    "opener:allow-reveal-item-in-dir",
+    "updater:default",
     "dialog:default"
   ]
 }
