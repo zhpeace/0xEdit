@@ -1805,18 +1805,31 @@ export class App {
       /* ignore */
     }
     const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const sections: Array<[string, string]> = [
+      [t("about.feat.editing.title"), t("about.feat.editing")],
+      [t("about.feat.files.title"), t("about.feat.files")],
+      [t("about.feat.remote.title"), t("about.feat.remote")],
+      [t("about.feat.tools.title"), t("about.feat.tools")],
+      [t("about.feat.reliable.title"), t("about.feat.reliable")],
+    ];
+    const body = sections
+      .map(
+        ([title, lines]) =>
+          `<div style="font-weight:600;margin:10px 0 2px;">${esc(title)}</div>` +
+          lines
+            .split("\n")
+            .map((l) => `<div>· ${esc(l)}</div>`)
+            .join(""),
+      )
+      .join("");
     const modal = document.createElement("div");
     modal.className = "modal-mask";
-    modal.innerHTML = `<div class="modal" style="min-width:520px;max-width:660px;">
+    modal.innerHTML = `<div class="modal" style="min-width:560px;max-width:680px;">
       <div class="modal-title">${esc(t("about.title"))}</div>
       <div class="modal-body" style="line-height:1.8;font-size:13px;max-height:70vh;overflow:auto;">
         <div style="font-size:15px;font-weight:600;margin-bottom:2px;">0xEdit <span style="font-weight:400;color:#888;">v${esc(ver)}</span></div>
-        <div style="color:#888;margin-bottom:8px;">${esc(t("about.text"))}</div>
-        <div style="font-weight:600;margin:10px 0 4px;">${esc(t("about.features"))}</div>
-        <div>· ${esc(t("about.core"))}</div>
-        <div>· ${esc(t("about.files"))}</div>
-        <div>· ${esc(t("about.remote"))}</div>
-        <div>· ${esc(t("about.reliable"))}</div>
+        <div style="color:#888;margin-bottom:6px;">${esc(t("about.text"))}</div>
+        ${body}
         <div style="color:#888;margin-top:12px;">${esc(t("about.copyright"))}</div>
       </div>
       <div class="modal-actions"><button class="primary modal-ok">${esc(t("确定"))}</button></div>
