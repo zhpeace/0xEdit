@@ -463,6 +463,11 @@ export class App {
       }
       localStorage.setItem("uec.session.paths", JSON.stringify(paths));
       localStorage.setItem("uec.session.pos", JSON.stringify(pos));
+      const activeDoc = this.active;
+      localStorage.setItem(
+        "uec.session.active",
+        activeDoc && activeDoc.path && !activeDoc.isBinary && !activeDoc.remote ? activeDoc.path : "",
+      );
     } catch {
       /* ignore */
     }
@@ -484,7 +489,9 @@ export class App {
       } catch {
         /* ignore */
       }
-      for (const p of paths.slice(0, 8)) {
+      const activePath = localStorage.getItem("uec.session.active") || "";
+      // 恢复全部本地文本标签（不截断），每个恢复光标位置
+      for (const p of paths) {
         await this.openFile(p).catch(() => {});
         const s = savedPos[p];
         const v = this.curView;
@@ -502,8 +509,9 @@ export class App {
           }
         }
       }
-      if (paths.length > 8) {
-        this.statusEls.pos.textContent = t("已恢复标签，其余 {n} 个未打开", { n: paths.length - 8 });
+      // 恢复上次激活的标签（openFile 对已打开文件会切到对应 tab）
+      if (activePath && paths.includes(activePath) && this.active?.path !== activePath) {
+        await this.openFile(activePath).catch(() => {});
       }
       if (this.prefPreview) {
         const d = this.active;
