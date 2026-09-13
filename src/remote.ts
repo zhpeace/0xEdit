@@ -171,6 +171,7 @@ export class RemoteBrowser {
   private onCloseTerms?: (siteId: string) => void;
   private showHidden = false;
   private sort: TreeSortState = loadTreeSort();
+  private filterText = "";
   // 右键临时目标（动作紧接着右键执行，不跨会话）
   private ctxArcNode: HTMLElement | null = null;
   private ctxNode: HTMLElement | null = null;
@@ -646,13 +647,34 @@ export class RemoteBrowser {
     const host = this.q<HTMLElement>("#ftp-sortbar");
     if (!host) return;
     host.innerHTML = "";
-    host.appendChild(
-      createSortBar(this.sort, (next) => {
-        this.sort = next;
-        this.ensureRemoteSortBar();
+    const bar = createSortBar(this.sort, (next) => {
+      this.sort = next;
+      this.ensureRemoteSortBar();
+      void this.refresh();
+    });
+    const filter = document.createElement("input");
+    filter.className = "ft-filter";
+    filter.type = "text";
+    filter.placeholder = t("搜索当前目录…");
+    filter.value = this.filterText;
+    filter.title = t("按名称过滤当前目录，ESC 清空");
+    filter.addEventListener("input", () => {
+      this.filterText = filter.value;
+      void this.refresh();
+    });
+    filter.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      e.preventDefault();
+      if (this.filterText) {
+        this.filterText = "";
+        filter.value = "";
         void this.refresh();
-      }),
-    );
+      }
+      filter.blur();
+    });
+    bar.appendChild(filter);
+    host.appendChild(bar);
   }
 
   // 目录树为面板级单例：在当前面板内查找元素
@@ -1319,7 +1341,9 @@ export class RemoteBrowser {
       const frag = document.createDocumentFragment();
       if (!this.isSftp() && pwd !== "/") frag.appendChild(this.node("..", true, 0, "", true));
       let shown = 0;
-      for (const e of sortEntries(res.entries, this.sort)) {
+      const kw = this.filterText.toLowerCase();
+      const filtered = kw ? res.entries.filter((e) => e.name.toLowerCase().includes(kw)) : res.entries;
+      for (const e of sortEntries(filtered, this.sort)) {
         if (!this.showHidden && e.name.startsWith(".")) continue;
         shown++;
         const full = this.isSftp() ? join(this.path, e.name) : e.name;
