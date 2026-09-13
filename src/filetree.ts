@@ -4,7 +4,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { FileEntry } from "./types";
 import { isArchiveFile, archiveKindOf, buildArchiveTree, findArchiveChildren, type ArchiveEntry, type ArchiveNode } from "./archive";
 import { extFor, iconLabel } from "./fileicons";
-import { t } from "./i18n";
+import { t, onLangChange } from "./i18n";
 import { sortEntries, loadTreeSort, createSortBar, fmtTime, kindLabel, type TreeSortState } from "./tree-sort";
 
 const cache = new Map<string, FileEntry[]>();
@@ -98,6 +98,7 @@ export class FileTree {
       <div class="ctx-item" data-act="terminal">${t("在终端打开")}</div>`;
     document.body.appendChild(this.ctx);
     el.addEventListener("contextmenu", (e) => this.onCtx(e));
+    onLangChange(() => this.localizeCtx());
     this.ctx.querySelectorAll<HTMLElement>(".ctx-item").forEach((item) => {
       item.addEventListener("click", () => {
         this.ctx.classList.add("hidden");
@@ -573,6 +574,38 @@ export class FileTree {
   }
 
   // ---------- 本地右键菜单 ----------
+
+  // 语言切换后更新右键菜单文案（静态模板需手动刷新；保留子元素如「解压到 <span>」）
+  private localizeCtx() {
+    if (!this.ctx) return;
+    const map: Record<string, string> = {
+      refresh: "刷新",
+      open: "打开",
+      openwith: "用默认应用打开",
+      reveal: "打开所在文件夹",
+      "copy-to": "复制到…",
+      "move-to": "移动到…",
+      extract: "解压文件…",
+      "extract-here": "解压到当前文件夹",
+      "extract-named": "解压到 ",
+      newfile: "新建文件",
+      newdir: "新建文件夹",
+      rename: "重命名",
+      del: "删除",
+      copypath: "复制路径",
+      terminal: "在终端打开",
+      "arc-open": "打开",
+      "arc-copypath": "复制路径",
+      "arc-refresh": "刷新归档",
+      "arc-extract": "提取到本地…",
+    };
+    this.ctx.querySelectorAll<HTMLElement>("[data-act]").forEach((it) => {
+      const key = map[it.dataset.act!];
+      if (!key) return;
+      const first = it.firstChild;
+      if (first && first.nodeType === Node.TEXT_NODE) (first as Text).textContent = t(key);
+    });
+  }
 
   private onCtx(e: MouseEvent) {
     const node = (e.target as HTMLElement).closest<HTMLElement>(".ft-node");
