@@ -72,6 +72,8 @@ const EN: Record<string, string> = {
   "确定删除服务器 {name} 吗？": "Delete server {name}?",
   "暂无服务器，点「+ 新建连接」添加": "No servers yet. Click \"+ New Connection\" to add one.",
   "搜索服务器…": "Search servers…",
+  "搜索当前目录…": "Filter current folder…",
+  "按名称过滤当前目录，ESC 清空": "Filter by name; ESC to clear",
   "终端": "Terminal",
   "连接其他服务器": "Connect Other Server",
   // 文件
@@ -749,6 +751,8 @@ const JA: Record<string, string> = {
   "确定删除服务器 {name} 吗？": "サーバー {name} を削除しますか？",
   "暂无服务器，点「+ 新建连接」添加": "サーバーがありません。「+ 新しい接続」で追加してください。",
   "搜索服务器…": "サーバーを検索…",
+  "搜索当前目录…": "現在のフォルダを絞り込み…",
+  "按名称过滤当前目录，ESC 清空": "名前で絞り込み、ESC でクリア",
   "终端": "ターミナル",
   "连接其他服务器": "他のサーバーに接続",
   "新建": "新規作成",

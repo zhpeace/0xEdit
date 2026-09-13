@@ -693,11 +693,27 @@ body {
   flex-wrap: wrap;
   gap: 2px;
   padding: 2px 8px 3px;
-  font-size: 11px;
-  color: var(--fg-dim);
+  font-size: 11px;  color: var(--fg-dim);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
   user-select: none;
+}
+
+.ft-sortbar .ft-filter {
+  margin-left: auto;
+  min-width: 90px;
+  max-width: 160px;
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  outline: none;
+}
+
+.ft-sortbar .ft-filter:focus {
+  border-color: var(--accent);
 }
 
 .ft-sort-item {

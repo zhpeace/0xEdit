@@ -50,6 +50,7 @@ export class FileTree {
   private onOpen: (path: string) => void;
   private onOpenArchive: (archivePath: string, kind: string, entry: string, archiveName: string) => void;
   private showHidden = false;
+  private filterText = "";
   private ctx: HTMLElement;
   private ctxPath: string | null = null;
   private ctxIsDir = false;
@@ -119,7 +120,7 @@ export class FileTree {
     if (this.curDir || this.arcView) void this.render("");
   }
 
-  // 重建排序栏（点击排序后刷新高亮/箭头）
+  // 重建排序栏（点击排序后刷新高亮/箭头）；尾部追加就地过滤搜索框
   private ensureSortBar() {
     const old = this.el.previousElementSibling;
     if (old && old.classList.contains("ft-sortbar")) old.remove();
@@ -128,6 +129,28 @@ export class FileTree {
       this.ensureSortBar();
       if (this.curDir || this.arcView) void this.render("");
     });
+    const filter = document.createElement("input");
+    filter.className = "ft-filter";
+    filter.type = "text";
+    filter.placeholder = t("搜索当前目录…");
+    filter.value = this.filterText;
+    filter.title = t("按名称过滤当前目录，ESC 清空");
+    filter.addEventListener("input", () => {
+      this.filterText = filter.value;
+      if (this.curDir || this.arcView) void this.render("");
+    });
+    filter.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      e.preventDefault();
+      if (this.filterText) {
+        this.filterText = "";
+        filter.value = "";
+        if (this.curDir || this.arcView) void this.render("");
+      }
+      filter.blur();
+    });
+    bar.appendChild(filter);
     if (this.el.parentElement) this.el.parentElement.insertBefore(bar, this.el);
   }
 
@@ -162,8 +185,11 @@ export class FileTree {
     }
     const dir = this.curDir;
     const children = await list(dir);
+    const filtered = this.filterText
+      ? children.filter((c) => c.name.toLowerCase().includes(this.filterText.toLowerCase()))
+      : children;
     const frag = document.createDocumentFragment();
-    frag.appendChild(this.renderChildren(sortEntries(children, this.sort), dir));
+    frag.appendChild(this.renderChildren(sortEntries(filtered, this.sort), dir));
     this.el.appendChild(frag);
     // 重绘后恢复此前展开的目录/归档（zip 展开后再恢复其内虚拟目录）
     const nodes = this.el.querySelectorAll<HTMLElement>(".ft-node");
