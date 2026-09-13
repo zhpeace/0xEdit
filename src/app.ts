@@ -1734,7 +1734,13 @@ export class App {
       item.textContent = t(label);
       item.addEventListener("click", (e) => {
         e.stopPropagation();
-        this.showMenuAt(item, this.menuData[label]());
+        // Chrome 风格 toggle：已打开则关闭，未打开则打开
+        if (item.classList.contains("open")) this.closeMenus();
+        else this.showMenuAt(item, this.menuData[label]());
+      });
+      // 菜单已打开时，鼠标滑到其他顶级项直接切换（Chrome/桌面应用交互）
+      item.addEventListener("mouseenter", () => {
+        if (document.querySelector(".dropdown-menu")) this.showMenuAt(item, this.menuData[label]());
       });
       bar.appendChild(item);
     }
@@ -1744,6 +1750,8 @@ export class App {
     this.closeMenus();
     const rect = anchor.getBoundingClientRect();
     this.showMenu(rect.left, rect.bottom, items);
+    // showMenu 内部会 closeMenus 一次，open 标记须在菜单渲染后设置
+    anchor.classList.add("open");
   }
 
   private showMenu(x: number, y: number, items: MenuEntry[]) {
@@ -1784,6 +1792,7 @@ export class App {
 
   private closeMenus() {
     document.querySelectorAll(".dropdown-menu").forEach((m) => m.remove());
+    document.querySelectorAll(".menu-item.open").forEach((m) => m.classList.remove("open"));
   }
 
   private alert(msg: string) {
@@ -4658,17 +4667,52 @@ export class App {
       }
     });
     window.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
-      // 统一 ESC：优先关闭下拉/右键菜单（捕获阶段，避免编辑器等吞掉按键）
+      if (e.defaultPrevented) return;
       const menu = document.querySelector<HTMLElement>(".dropdown-menu");
-      if (menu) {
+      if (e.key === "Escape") {
+        // 统一 ESC：优先关闭下拉/右键菜单（捕获阶段，避免编辑器等吞掉按键）
+        if (menu) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.closeMenus();
+        }
+        return;
+      }
+      if (!menu) return;
+      // Chrome 风格键盘导航：↑↓ 选择、Enter 执行、←→ 切换顶级菜单
+      const drops = [...menu.querySelectorAll<HTMLElement>(".menu-item-drop")];
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         e.stopPropagation();
-        this.closeMenus();
+        if (!drops.length) return;
+        const idx = drops.findIndex((x) => x.classList.contains("focused"));
+        const dir = e.key === "ArrowDown" ? 1 : -1;
+        const next = idx < 0 ? (dir > 0 ? 0 : drops.length - 1) : (idx + dir + drops.length) % drops.length;
+        drops.forEach((x) => x.classList.remove("focused"));
+        drops[next].classList.add("focused");
+        drops[next].scrollIntoView({ block: "nearest" });
+      } else if (e.key === "Enter") {
+        const f = menu.querySelector<HTMLElement>(".menu-item-drop.focused");
+        if (f) {
+          e.preventDefault();
+          e.stopPropagation();
+          f.click();
+        }
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        e.stopPropagation();
+        const open = document.querySelector<HTMLElement>(".menu-item.open");
+        if (!open) return;
+        const all = [...document.querySelectorAll<HTMLElement>("#menubar .menu-item")];
+        const i = all.indexOf(open);
+        const next = all[i + (e.key === "ArrowRight" ? 1 : -1)];
+        if (next) next.click();
       }
     }, true);
     document.addEventListener("mousedown", (e) => {
       if ((e.target as HTMLElement).closest?.(".dropdown-menu")) return;
+      // 顶级菜单项的开关逻辑交给 click（toggle），mousedown 不干预
+      if ((e.target as HTMLElement).closest?.(".menu-item")) return;
       this.closeMenus();
     });
   }
