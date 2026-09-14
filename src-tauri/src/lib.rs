@@ -1921,66 +1921,103 @@ fn archive_update(path: String, entry_name: String, new_content: String) -> Resu
 }
 
 // 创建 zip 压缩包：把 items（绝对路径列表，文件或目录）递归打包到 dir/<name>.zip
-// 目标已存在自动加序号（a.zip → a (2).zip），zip 条目统一使用 / 分隔符
+// 目标已存在自动加序号（a.zip → a (2).zip），zip 条目统一使用 / 分隔符；
+// 通过 uec-transfer 事件实时上报进度（右下角传输浮条），进度按已写字节计
 #[tauri::command]
-fn create_archive(dir: String, name: String, items: Vec<String>) -> Result<String, String> {
+fn create_archive(app: tauri::AppHandle, dir: String, name: String, items: Vec<String>) -> Result<String, String> {
+    create_archive_impl(Some(&app), &dir, &name, &items)
+}
+
+fn create_archive_impl(
+    app: Option<&tauri::AppHandle>,
+    dir: &str,
+    name: &str,
+    items: &[String],
+) -> Result<String, String> {
     use std::io::Write;
     if items.is_empty() {
         return Err("请选择要压缩的文件或文件夹".to_string());
     }
     let base_name = if name.to_lowercase().ends_with(".zip") {
-        name
+        name.to_string()
     } else {
         format!("{name}.zip")
     };
-    let target = unique_dest(&std::path::Path::new(&dir).join(&base_name));
-    let out_file = std::fs::File::create(&target).map_err(|e| format!("创建压缩文件: {e}"))?;
-    let mut zw = zip::ZipWriter::new(out_file);
-    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    for item in &items {
+    let target = unique_dest(&std::path::Path::new(dir).join(&base_name));
+    let task_id = format!(
+        "zip-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    );
+    // 第一遍收集条目（zip 名 / 源路径 / 大小 / 是否目录），同时统计总字节
+    #[derive(Clone)]
+    struct Entry {
+        zip_name: String,
+        src: Option<std::path::PathBuf>,
+        size: u64,
+        is_dir: bool,
+    }
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut total: u64 = 0;
+    for item in items {
         let p = std::path::Path::new(item);
         if !p.exists() {
             continue;
         }
-        let root_name = p
+        let root = p
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         if p.is_dir() {
-            add_dir_to_zip(&mut zw, p, &root_name, opts)?;
+            entries.push(Entry { zip_name: format!("{root}/"), src: None, size: 0, is_dir: true });
+            for entry in walkdir::WalkDir::new(p).min_depth(1) {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let path = entry.path();
+                let rel = path.strip_prefix(p).map_err(|e| e.to_string())?;
+                let zip_name = format!("{}/{}", root, rel.to_string_lossy().replace('\\', "/"));
+                if entry.file_type().is_dir() {
+                    entries.push(Entry { zip_name: format!("{zip_name}/"), src: None, size: 0, is_dir: true });
+                } else {
+                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    total += size;
+                    entries.push(Entry { zip_name, src: Some(path.to_path_buf()), size, is_dir: false });
+                }
+            }
         } else {
-            zw.start_file(&root_name, opts).map_err(|e| e.to_string())?;
-            let mut f = std::fs::File::open(p).map_err(|e| format!("打开文件: {e}"))?;
-            std::io::copy(&mut f, &mut zw).map_err(|e| e.to_string())?;
+            let size = p.metadata().map(|m| m.len()).unwrap_or(0);
+            total += size;
+            entries.push(Entry { zip_name: root, src: Some(p.to_path_buf()), size, is_dir: false });
+        }
+    }
+    if let Some(app) = app {
+        emit_transfer(app, &task_id, "zip", &base_name, 0, total, "progress", None);
+    }
+    let out_file = std::fs::File::create(&target).map_err(|e| format!("创建压缩文件: {e}"))?;
+    let mut zw = zip::ZipWriter::new(out_file);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let mut done: u64 = 0;
+    for e in &entries {
+        if e.is_dir {
+            zw.add_directory(&e.zip_name, opts).map_err(|err| err.to_string())?;
+        } else {
+            zw.start_file(&e.zip_name, opts).map_err(|err| err.to_string())?;
+            if let Some(src) = &e.src {
+                let mut f = std::fs::File::open(src).map_err(|err| format!("打开文件: {err}"))?;
+                std::io::copy(&mut f, &mut zw).map_err(|err| err.to_string())?;
+            }
+            done += e.size;
+            if let Some(app) = app {
+                emit_transfer(app, &task_id, "zip", &base_name, done, total, "progress", None);
+            }
         }
     }
     zw.finish().map_err(|e| e.to_string())?;
-    Ok(target.to_string_lossy().into_owned())
-}
-
-// 递归把目录写入 zip（保留相对目录结构）
-fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
-    zw: &mut zip::ZipWriter<W>,
-    dir: &std::path::Path,
-    prefix: &str,
-    opts: zip::write::SimpleFileOptions,
-) -> Result<(), String> {
-    use std::io::Write;
-    zw.add_directory(format!("{prefix}/"), opts).map_err(|e| e.to_string())?;
-    for entry in walkdir::WalkDir::new(dir).min_depth(1) {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        let rel = path.strip_prefix(dir).map_err(|e| e.to_string())?;
-        let entry_name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
-        if entry.file_type().is_dir() {
-            zw.add_directory(format!("{entry_name}/"), opts).map_err(|e| e.to_string())?;
-        } else {
-            zw.start_file(&entry_name, opts).map_err(|e| e.to_string())?;
-            let mut f = std::fs::File::open(path).map_err(|e| format!("打开文件: {e}"))?;
-            std::io::copy(&mut f, zw).map_err(|e| e.to_string())?;
-        }
+    if let Some(app) = app {
+        emit_transfer(app, &task_id, "zip", &base_name, total, total, "done", None);
     }
-    Ok(())
+    Ok(target.to_string_lossy().into_owned())
 }
 
 // bsdtar（macOS 自带 libarchive）列出外部归档条目：-tvf 输出 权限 用户 组 大小 日期 时间 名称
@@ -2334,6 +2371,39 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn test_create_archive_zip_recursive() {
+        let dir = std::env::temp_dir().join(format!("uec_zip_create_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir.join("src/sub")).unwrap();
+        fs::write(dir.join("src/a.txt"), "alpha").unwrap();
+        fs::write(dir.join("src/sub/b.txt"), "beta").unwrap();
+        fs::write(dir.join("top.txt"), "top").unwrap();
+        let items = vec![
+            dir.join("src").to_string_lossy().to_string(),
+            dir.join("top.txt").to_string_lossy().to_string(),
+        ];
+        let out = create_archive_impl(None, &dir.to_string_lossy(), "pkg", &items).unwrap();
+        let out_path = std::path::Path::new(&out);
+        assert!(out_path.exists(), "zip 应已生成");
+        assert_eq!(out_path.file_name().unwrap().to_str().unwrap(), "pkg.zip");
+        // 重名 → 自动加序号
+        let out2 = create_archive_impl(None, &dir.to_string_lossy(), "pkg", &items).unwrap();
+        assert!(out2.ends_with("pkg (2).zip"), "重名应加序号: {out2}");
+        // 校验 zip 内容
+        let f = std::fs::File::open(&out).unwrap();
+        let mut z = zip::ZipArchive::new(f).unwrap();
+        let names: Vec<String> = (0..z.len()).map(|i| z.by_index(i).unwrap().name().to_string()).collect();
+        assert!(names.contains(&"src/a.txt".to_string()), "含 src/a.txt: {names:?}");
+        assert!(names.contains(&"src/sub/b.txt".to_string()), "含 src/sub/b.txt: {names:?}");
+        assert!(names.contains(&"top.txt".to_string()), "含 top.txt: {names:?}");
+        let mut a = z.by_name("src/sub/b.txt").unwrap();
+        let mut buf = String::new();
+        use std::io::Read;
+        a.read_to_string(&mut buf).unwrap();
+        assert_eq!(buf, "beta", "内容应完整");
+        let _ = fs::remove_dir_all(&dir);
+    }
     #[test]
     fn test_extract_archive_entry_zip() {
         let dir = std::env::temp_dir().join("uec_extract");
