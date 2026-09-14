@@ -6,6 +6,7 @@ import { isArchiveFile, archiveKindOf, buildArchiveTree, findArchiveChildren, ty
 import { extFor, iconLabel } from "./fileicons";
 import { t, onLangChange } from "./i18n";
 import { sortEntries, loadTreeSort, createSortBar, fmtTime, kindLabel, type TreeSortState } from "./tree-sort";
+import { pathBase, localCrumbs } from "./path-util";
 
 const cache = new Map<string, FileEntry[]>();
 
@@ -117,6 +118,30 @@ export class FileTree {
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this.ctx.classList.add("hidden");
     });
+    // 路径栏「跳转」按钮（事件委托，按钮由 renderPath 动态渲染）：输入任意路径直达（Windows 可切盘符/UNC）
+    document.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLElement>("#sb-jump-local");
+      if (!btn) return;
+      e.preventDefault();
+      void this.jumpToPath();
+    });
+  }
+
+  private async jumpToPath() {
+    const input = await this.promptModal(t("跳转到路径"), this.curDir);
+    if (!input) return;
+    const p = input.trim();
+    if (!p) return;
+    try {
+      const isDir = await invoke<boolean>("path_is_dir", { path: p });
+      if (!isDir) {
+        this.toast(t("路径不存在或不是文件夹"));
+        return;
+      }
+      this.enterDir(p);
+    } catch (err) {
+      this.toast(String(err));
+    }
   }
 
   // 显示隐藏文件开关（由 app 层调用并持久化）
@@ -227,8 +252,11 @@ export class FileTree {
   private renderPath() {
     const bar = document.getElementById("ft-path");
     if (!bar) return;
-    // 路径栏右侧的操作按钮（刷新 / 显示隐藏文件），随路径栏 flex 垂直居中
+    // 路径栏右侧的操作按钮（跳转 / 刷新 / 显示隐藏文件），随路径栏 flex 垂直居中
     const btns =
+      `<button id="sb-jump-local" class="sb-hidden sb-jump" title="${t("跳转到路径…")}">` +
+      '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>' +
+      "</button>" +
       `<button id="sb-refresh-local" class="sb-hidden sb-refresh" title="${t("刷新")}">` +
       '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>' +
       "</button>" +
@@ -252,13 +280,7 @@ export class FileTree {
           .map((c) => `<span class="ft-crumb${c.exit ? " ft-crumb-exit" : ""}" data-exit="${c.exit ? "1" : ""}" data-kind="arc" data-dir="${escapeHtml(c.dir)}">${escapeHtml(c.label)}</span>`)
           .join('<span class="ft-crumb-sep">/</span>') + btns;
     } else {
-      const parts = this.curDir.split("/").filter(Boolean);
-      const crumbs: Array<{ label: string; path: string }> = [{ label: "/", path: "/" }];
-      let acc = "";
-      for (const p of parts) {
-        acc += "/" + p;
-        crumbs.push({ label: p, path: acc });
-      }
+      const crumbs = localCrumbs(this.curDir);
       bar.innerHTML =
         crumbs
           .map((c) => `<span class="ft-crumb" data-kind="fs" data-path="${escapeHtml(c.path)}">${escapeHtml(c.label)}</span>`)
@@ -682,7 +704,7 @@ export class FileTree {
     (this.ctx.querySelector('[data-act="newfile"]') as HTMLElement).style.display = this.ctxIsDir ? "" : "none";
     (this.ctx.querySelector('[data-act="newdir"]') as HTMLElement).style.display = this.ctxIsDir ? "" : "none";
     // 归档解压/测试组仅对归档文件生效（WinRAR 风格）
-    const nm = this.ctxPath ? (this.ctxPath.split("/").pop() || this.ctxPath.split("\\").pop() || "") : "";
+    const nm = this.ctxPath ? (pathBase(this.ctxPath)) : "";
     const isArcFile = isArchiveFile(nm);
     for (const a of ["extract", "extract-here", "extract-named"]) {
       (this.ctx.querySelector(`[data-act="${a}"]`) as HTMLElement).style.display = isArcFile ? "" : "none";
@@ -706,7 +728,7 @@ export class FileTree {
       const path = sel.dataset.path;
       if (!path) return;
       e.preventDefault();
-      const name = path.split("/").pop() || path.split("\\").pop() || path;
+      const name = pathBase(path);
       this.clipboard = { path, name };
       this.toast(t("已复制 {name}，在目标目录右键粘贴", { name }));
     } else if (k === "v") {
@@ -786,7 +808,7 @@ export class FileTree {
     }
     if (!this.ctxPath) return;
     const path = this.ctxPath;
-    const nm = path.split("/").pop() || path;
+    const nm = pathBase(path);
     if (act === "open") {
       // 与双击一致：归档文件进入视图 / 目录进入 / 文件打开
       if (isArchiveFile(nm) && this.ctxNode) {
@@ -819,7 +841,7 @@ export class FileTree {
     if (act === "copy") {
       // 剪贴板式复制：记住源路径，到目标目录右键「粘贴」
       if (!path) return;
-      const name = path.split("/").pop() || path.split("\\").pop() || path;
+      const name = pathBase(path);
       this.clipboard = { path, name };
       this.toast(t("已复制 {name}，在目标目录右键粘贴", { name }));
       return;
@@ -835,7 +857,7 @@ export class FileTree {
       const target = Array.isArray(dir) ? dir[0] : dir;
       // 移动是"删源"操作，先弹确认（显示源 → 目标），防误选目标目录
       if (act === "move-to") {
-        const base = path.split("/").pop() || path;
+        const base = pathBase(path);
         const yes = await this.confirmModal(t("移动到…"), t("将 {name} 移动到 {dest}？", { name: base, dest: target }), t("移动"));
         if (!yes) return;
       }
@@ -906,7 +928,7 @@ export class FileTree {
       return;
     }
     if (act === "rename") {
-      const base = path.split("/").pop() || path;
+      const base = pathBase(path);
       const name = await this.promptModal(t("重命名"), base);
       if (!name || name === base) return;
       const ok = await invoke<boolean>("rename_local", { oldPath: path, newName: name })
@@ -920,7 +942,7 @@ export class FileTree {
       return;
     }
     if (act === "del") {
-      const base = path.split("/").pop() || path;
+      const base = pathBase(path);
       const yes = await this.confirmModal(
         t("删除"),
         this.ctxIsDir

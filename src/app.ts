@@ -23,6 +23,7 @@ import { rectangleSelection, setColumnMode, isColumnMode, rectKeyboard } from ".
 import { HexEditor, formatSize } from "./hex";
 import { FindBar, searchHighlight } from "./find";
 import { FileTree } from "./filetree";
+import { pathBase } from "./path-util";
 import { bookmarks, toggleBookmark, nextBookmark, prevBookmark, clearAllBookmarks, getBookmarkLines } from "./bookmarks";
 import { editPositionListener, jumpBack, jumpForward } from "./jumplist";
 import { sortSelection, titleCaseSelection, joinLines, upperCaseCmd, lowerCaseCmd, toggleCaseCmd, insertNumberSequence, convertLineEndings, lineEndingLabel, rewrapLines, type LineEnding } from "./editops";
@@ -3052,7 +3053,7 @@ export class App {
     const add = (p: string) => {
       if (seen.has(p)) return;
       seen.add(p);
-      files.push({ path: p, name: p.split("/").pop() || p });
+      files.push({ path: p, name: pathBase(p) });
     };
     for (const d of this.docs.values()) if (d.path) add(d.path);
     for (const p of getRecent()) add(p);

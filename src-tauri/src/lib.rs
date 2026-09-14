@@ -638,11 +638,17 @@ fn dirs_home() -> Option<String> {
 
 fn recovery_dir() -> String {
     let home = dirs_home().unwrap_or_else(|| ".".into());
-    format!("{home}/.0xedit_recovery")
+    std::path::PathBuf::from(home)
+        .join(".0xedit_recovery")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn recovery_file(key: &str) -> String {
-    format!("{}/{}.json", recovery_dir(), key)
+    std::path::PathBuf::from(recovery_dir())
+        .join(format!("{key}.json"))
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2444,8 +2450,26 @@ mod tests {
 
 // ============ 本地文件操作（右键菜单） ============
 
+// Windows 文件名非法字符预校验（<>:"/\|?* 及控制字符），macOS/Linux 无此限制
+#[cfg(target_os = "windows")]
+fn validate_win_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("文件名不能为空".to_string());
+    }
+    if name.chars().any(|c| "<>:\"/\\|?*".contains(c) || (c as u32) < 0x20) {
+        return Err("文件名包含 Windows 非法字符（<>:\"/\\|?*）".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn validate_win_name(_name: &str) -> Result<(), String> {
+    Ok(())
+}
+
 #[tauri::command]
 fn create_local_file(dir: String, name: String) -> Result<(), String> {
+    validate_win_name(&name)?;
     let p = std::path::Path::new(&dir).join(&name);
     if p.exists() {
         return Err(format!("已存在: {name}"));
@@ -2455,6 +2479,7 @@ fn create_local_file(dir: String, name: String) -> Result<(), String> {
 
 #[tauri::command]
 fn create_local_dir(dir: String, name: String) -> Result<(), String> {
+    validate_win_name(&name)?;
     let p = std::path::Path::new(&dir).join(&name);
     if p.exists() {
         return Err(format!("已存在: {name}"));
@@ -2464,6 +2489,7 @@ fn create_local_dir(dir: String, name: String) -> Result<(), String> {
 
 #[tauri::command]
 fn rename_local(old_path: String, new_name: String) -> Result<(), String> {
+    validate_win_name(&new_name)?;
     let p = std::path::Path::new(&old_path);
     let parent = p.parent().ok_or_else(|| "无法确定父目录".to_string())?;
     let np = parent.join(&new_name);
