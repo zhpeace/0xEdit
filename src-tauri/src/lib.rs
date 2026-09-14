@@ -1920,6 +1920,69 @@ fn archive_update(path: String, entry_name: String, new_content: String) -> Resu
     }
 }
 
+// 创建 zip 压缩包：把 items（绝对路径列表，文件或目录）递归打包到 dir/<name>.zip
+// 目标已存在自动加序号（a.zip → a (2).zip），zip 条目统一使用 / 分隔符
+#[tauri::command]
+fn create_archive(dir: String, name: String, items: Vec<String>) -> Result<String, String> {
+    use std::io::Write;
+    if items.is_empty() {
+        return Err("请选择要压缩的文件或文件夹".to_string());
+    }
+    let base_name = if name.to_lowercase().ends_with(".zip") {
+        name
+    } else {
+        format!("{name}.zip")
+    };
+    let target = unique_dest(&std::path::Path::new(&dir).join(&base_name));
+    let out_file = std::fs::File::create(&target).map_err(|e| format!("创建压缩文件: {e}"))?;
+    let mut zw = zip::ZipWriter::new(out_file);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for item in &items {
+        let p = std::path::Path::new(item);
+        if !p.exists() {
+            continue;
+        }
+        let root_name = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if p.is_dir() {
+            add_dir_to_zip(&mut zw, p, &root_name, opts)?;
+        } else {
+            zw.start_file(&root_name, opts).map_err(|e| e.to_string())?;
+            let mut f = std::fs::File::open(p).map_err(|e| format!("打开文件: {e}"))?;
+            std::io::copy(&mut f, &mut zw).map_err(|e| e.to_string())?;
+        }
+    }
+    zw.finish().map_err(|e| e.to_string())?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+// 递归把目录写入 zip（保留相对目录结构）
+fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
+    zw: &mut zip::ZipWriter<W>,
+    dir: &std::path::Path,
+    prefix: &str,
+    opts: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    use std::io::Write;
+    zw.add_directory(format!("{prefix}/"), opts).map_err(|e| e.to_string())?;
+    for entry in walkdir::WalkDir::new(dir).min_depth(1) {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let rel = path.strip_prefix(dir).map_err(|e| e.to_string())?;
+        let entry_name = format!("{}/{}", prefix, rel.to_string_lossy().replace('\\', "/"));
+        if entry.file_type().is_dir() {
+            zw.add_directory(format!("{entry_name}/"), opts).map_err(|e| e.to_string())?;
+        } else {
+            zw.start_file(&entry_name, opts).map_err(|e| e.to_string())?;
+            let mut f = std::fs::File::open(path).map_err(|e| format!("打开文件: {e}"))?;
+            std::io::copy(&mut f, zw).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 // bsdtar（macOS 自带 libarchive）列出外部归档条目：-tvf 输出 权限 用户 组 大小 日期 时间 名称
 fn list_external_entries(path: &str) -> Result<Vec<ArchiveEntry>, String> {
     let out = std::process::Command::new("bsdtar")
@@ -2858,6 +2921,7 @@ pub fn run() {
             delete_local,
             copy_to,
             move_to,
+            create_archive,
             sftp_copy,
             ftp_copy,
             write_binary_file,

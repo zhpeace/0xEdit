@@ -40,11 +40,12 @@ interface ArcView {
 export class FileTree {
   private el: HTMLElement;
   private curDir = "";
-  private clipboard: { path: string; name: string } | null = null;
+  private clipboard: { paths: string[]; name: string } | null = null;
   private arcView: ArcView | null = null;
   private arcTree: ArchiveNode[] = [];
   private arcTreePath = "";
   private selected: HTMLElement | null = null;
+  private selectedPaths = new Set<string>();
   // 展开状态记录（refreshAll/render 重绘后恢复，避免操作后树被收起）
   private expandedDirs = new Set<string>();   // 物理目录 path
   private expandedArcs = new Set<string>();   // 归档文件 arcPath（树内展开）
@@ -94,6 +95,7 @@ export class FileTree {
       <div class="ctx-item" data-act="extract">${t("解压文件…")}</div>
       <div class="ctx-item" data-act="extract-here">${t("解压到当前文件夹")}</div>
       <div class="ctx-item" data-act="extract-named">${t("解压到 ")}<span data-name-label></span>\\</div>
+      <div class="ctx-item" data-act="archive-zip">压缩为 ZIP…</div>
       <div class="ctx-item" data-act="newfile">${t("新建文件")}</div>
       <div class="ctx-item" data-act="newdir">${t("新建文件夹")}</div>
       <div class="ctx-sep"></div>
@@ -116,7 +118,10 @@ export class FileTree {
       if (!this.ctx.contains(e.target as Node)) this.ctx.classList.add("hidden");
     });
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") this.ctx.classList.add("hidden");
+      if (e.key === "Escape") {
+        this.ctx.classList.add("hidden");
+        this.clearMultiSelect();
+      }
     });
     // 路径栏「跳转」按钮（事件委托，按钮由 renderPath 动态渲染）：输入任意路径直达（Windows 可切盘符/UNC）
     document.addEventListener("click", (e) => {
@@ -419,15 +424,21 @@ export class FileTree {
       }
     }
     this.el.appendChild(ul);
+    // render 重绘后恢复多选高亮（按 dataset.path 匹配）
+    this.syncSelected();
   }
 
   // ---------- Finder 交互：单击箭头=展开/收起；单击名称=选中；双击=进入/打开 ----------
 
   private async onClick(e: MouseEvent) {
     const node = (e.target as HTMLElement).closest<HTMLElement>(".ft-node");
-    if (!node) return;
+    if (!node) {
+      // 点击空白：取消全选（Finder 语义）
+      this.clearMultiSelect();
+      return;
+    }
     const isArrow = (e.target as HTMLElement).classList.contains("ft-arrow");
-    this.select(node);
+    this.select(node, e.metaKey || e.ctrlKey);
     if (this.arcView) {
       // 进入视图模式：虚拟目录单击箭头 = 内联展开/收起（Finder 语义），双击 = 进入
       if (node.classList.contains("ft-vdir") && isArrow) {
@@ -485,16 +496,53 @@ export class FileTree {
     this.onOpen(path);
   }
 
-  private select(node: HTMLElement) {
-    if (this.selected && this.selected !== node) this.selected.classList.remove("ft-selected");
-    this.selected = node;
-    node.classList.add("ft-selected");
+  // 单选：清空多选并选中该节点；additive=true 时 ⌘/Ctrl+单击 加选/减选
+  private select(node: HTMLElement, additive = false) {
+    if (!additive) {
+      this.selectedPaths.clear();
+      this.selected = node;
+      this.selectedPaths.add(node.dataset.path || "");
+    } else {
+      const p = node.dataset.path || "";
+      if (this.selectedPaths.has(p)) {
+        this.selectedPaths.delete(p);
+        this.selected = null;
+      } else {
+        this.selectedPaths.add(p);
+        this.selected = node;
+      }
+    }
+    this.syncSelected();
+  }
+
+  private clearMultiSelect() {
+    if (!this.selectedPaths.size && !this.selected) return;
+    this.selectedPaths.clear();
+    this.selected = null;
+    this.syncSelected();
+  }
+
+  // 同步多选高亮（render 重绘后调用，按 dataset.path 匹配）
+  private syncSelected() {
+    this.el.querySelectorAll<HTMLElement>(".ft-node").forEach((n) => {
+      n.classList.toggle("ft-selected", this.selectedPaths.has(n.dataset.path || ""));
+    });
+  }
+
+  /** 当前有效操作路径集合：右键节点在多选中则取多选，否则取右键节点 */
+  private effectivePaths(): string[] {
+    const cp = this.ctxPath;
+    if (cp && this.selectedPaths.has(cp) && this.selectedPaths.size > 1) {
+      return [...this.selectedPaths];
+    }
+    return cp ? [cp] : [];
   }
 
   // 双击目录：进入（Finder）——树根切换为该目录，面包屑可返回
   private enterDir(path: string) {
     this.curDir = path;
     this.arcView = null;
+    this.clearMultiSelect();
     void this.render(path);
   }
 
@@ -643,6 +691,7 @@ export class FileTree {
       extract: "解压文件…",
       "extract-here": "解压到当前文件夹",
       "extract-named": "解压到 ",
+      "archive-zip": "压缩为 ZIP…",
       newfile: "新建文件",
       newdir: "新建文件夹",
       rename: "重命名",
@@ -672,6 +721,7 @@ export class FileTree {
       this.ctxNode = null;
       this.ctxPath = this.curDir || null;
       this.ctxIsDir = true;
+      this.clearMultiSelect();
       this.ctx.querySelectorAll<HTMLElement>("[data-act]").forEach((it) => {
         const arc = it.dataset.arc === "1";
         const keep = ["refresh", "newfile", "newdir", "paste", "terminal"].includes(it.dataset.act!);
@@ -700,6 +750,13 @@ export class FileTree {
     if (isArc) return;
     this.ctxNode = node;
     this.ctxPath = node.dataset.path || null;
+    // 右键多选语义：若右键节点已在多选中则保持多选，否则单选该节点
+    if (!this.selectedPaths.has(node.dataset.path || "") || this.selectedPaths.size <= 1) {
+      this.selectedPaths.clear();
+      this.selectedPaths.add(node.dataset.path || "");
+      this.selected = node;
+      this.syncSelected();
+    }
     // 「新建」仅对目录生效
     (this.ctx.querySelector('[data-act="newfile"]') as HTMLElement).style.display = this.ctxIsDir ? "" : "none";
     (this.ctx.querySelector('[data-act="newdir"]') as HTMLElement).style.display = this.ctxIsDir ? "" : "none";
@@ -713,6 +770,12 @@ export class FileTree {
       const base = nm.replace(/(\.tar\.gz|\.tar\.bz2|\.tar\.xz|\.tar\.zst|\.tgz|\.tbz2|\.txz|\.tzst|\.zipx|\.zip|\.jar|\.war|\.ear|\.apk|\.aar|\.rar|\.7z|\.iso|\.cab|\.cpio|\.deb|\.rpm|\.zst|\.lz4|\.tar)$/i, "") || nm;
       (this.ctx.querySelector('[data-name-label]') as HTMLElement).textContent = base;
     }
+    // 多选时：单节点操作置灰（打开/重命名/终端等），批量操作（复制/粘贴/移动/删除/压缩）保持可用
+    const multi = this.selectedPaths.size > 1;
+    for (const a of ["open", "openwith", "reveal", "rename", "terminal", "copypath", "extract", "extract-here", "extract-named"]) {
+      const it = this.ctx.querySelector(`[data-act="${a}"]`) as HTMLElement | null;
+      if (it) it.classList.toggle("ctx-disabled", multi);
+    }
     const pasteIt = this.ctx.querySelector('[data-act="paste"]') as HTMLElement;
     if (pasteIt) this.applyPasteState(pasteIt);
   }
@@ -723,13 +786,12 @@ export class FileTree {
     if (tgt && (tgt.closest(".cm-editor") || tgt.closest(".xterm") || tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable)) return;
     const k = e.key.toLowerCase();
     if (k === "c") {
-      const sel = this.selected;
-      if (!sel) return;
-      const path = sel.dataset.path;
-      if (!path) return;
+      if (!this.selectedPaths.size) return;
       e.preventDefault();
-      const name = pathBase(path);
-      this.clipboard = { path, name };
+      const paths = [...this.selectedPaths].filter(Boolean);
+      if (!paths.length) return;
+      const name = paths.length > 1 ? t("选中 {n} 项", { n: paths.length }) : pathBase(paths[0]);
+      this.clipboard = { paths, name };
       this.toast(t("已复制 {name}，在目标目录右键粘贴", { name }));
     } else if (k === "v") {
       if (!this.clipboard) return;
@@ -756,9 +818,11 @@ export class FileTree {
     }
     if (!this.curDir) return;
     try {
-      // 复用后端 copy_to：重名自动加序号、目录复制进自身子目录会拦截
-      const dest = await invoke<string>("copy_to", { src: cb.path, destDir: this.curDir });
-      this.toast(t("已粘贴到 {dest}", { dest }));
+      // 复用后端 copy_to：重名自动加序号、目录复制进自身子目录会拦截；多选逐项处理
+      for (const src of cb.paths) {
+        await invoke<string>("copy_to", { src, destDir: this.curDir });
+      }
+      this.toast(t("已粘贴到 {dest}", { dest: this.curDir }));
       this.refreshAll();
     } catch (e) {
       this.toast(t("粘贴失败：") + String(e));
@@ -766,6 +830,10 @@ export class FileTree {
   }
 
   private async ctxAction(act: string) {
+    // 单节点专属操作：多选时置灰且防误触（键盘/程序入口兜底）
+    if (["open", "openwith", "reveal", "rename", "terminal", "copypath", "extract", "extract-here", "extract-named"].includes(act) && this.effectivePaths().length > 1) {
+      return;
+    }
     // 归档虚拟节点动作
     if (act.startsWith("arc-")) {
       const node = this.ctxArcNode;
@@ -839,10 +907,11 @@ export class FileTree {
       return;
     }
     if (act === "copy") {
-      // 剪贴板式复制：记住源路径，到目标目录右键「粘贴」
-      if (!path) return;
-      const name = pathBase(path);
-      this.clipboard = { path, name };
+      // 剪贴板式复制：记住源路径（支持多选），到目标目录右键「粘贴」
+      const paths = this.effectivePaths();
+      if (!paths.length) return;
+      const name = paths.length > 1 ? t("选中 {n} 项", { n: paths.length }) : pathBase(paths[0]);
+      this.clipboard = { paths, name };
       this.toast(t("已复制 {name}，在目标目录右键粘贴", { name }));
       return;
     }
@@ -850,23 +919,40 @@ export class FileTree {
       await this.pasteLocal();
       return;
     }
+    if (act === "archive-zip") {
+      const paths = this.effectivePaths();
+      if (!paths.length || !this.curDir) return;
+      const first = pathBase(paths[0]).replace(/\.zip$/i, "") || "archive";
+      const name = await this.promptModal(t("压缩为 ZIP"), first);
+      if (!name) return;
+      try {
+        const dest = await invoke<string>("create_archive", { dir: this.curDir, name, items: paths });
+        this.toast(t("已创建 {name}", { name: pathBase(dest) }));
+        this.refreshAll();
+      } catch (e) {
+        this.toast(String(e));
+      }
+      return;
+    }
     if (act === "copy-to" || act === "move-to") {
-      // 复制/移动到指定目录（弹目录选择器；重名自动加序号不覆盖）
+      // 复制/移动到指定目录（弹目录选择器；重名自动加序号不覆盖）；支持多选逐项处理
+      const paths = this.effectivePaths();
+      if (!paths.length) return;
       const dir = await openDialog({ directory: true, title: t("选择目标文件夹") });
       if (!dir) return;
       const target = Array.isArray(dir) ? dir[0] : dir;
       // 移动是"删源"操作，先弹确认（显示源 → 目标），防误选目标目录
       if (act === "move-to") {
-        const base = pathBase(path);
-        const yes = await this.confirmModal(t("移动到…"), t("将 {name} 移动到 {dest}？", { name: base, dest: target }), t("移动"));
+        const shown = paths.length > 1 ? t("选中 {n} 项", { n: paths.length }) : pathBase(paths[0]);
+        const yes = await this.confirmModal(t("移动到…"), t("将 {name} 移动到 {dest}？", { name: shown, dest: target }), t("移动"));
         if (!yes) return;
       }
       try {
-        const dest = await invoke<string>(act === "copy-to" ? "copy_to" : "move_to", {
-          src: path,
-          destDir: target,
-        });
-        this.toast(act === "copy-to" ? t("已复制到 {dest}", { dest }) : t("已移动到 {dest}", { dest }));
+        const cmd = act === "copy-to" ? "copy_to" : "move_to";
+        for (const p of paths) {
+          await invoke<string>(cmd, { src: p, destDir: target });
+        }
+        this.toast(act === "copy-to" ? t("已复制到 {dest}", { dest: target }) : t("已移动到 {dest}", { dest: target }));
         if (act === "move-to") this.refreshAll();
       } catch (e) {
         this.toast(t("操作失败：") + String(e));
@@ -942,24 +1028,32 @@ export class FileTree {
       return;
     }
     if (act === "del") {
-      const base = pathBase(path);
+      const paths = this.effectivePaths();
+      if (!paths.length) return;
+      const multi = paths.length > 1;
+      const shown = multi ? t("选中 {n} 项", { n: paths.length }) : pathBase(paths[0]);
+      const isDir = multi ? false : this.ctxIsDir;
       const yes = await this.confirmModal(
         t("删除"),
-        this.ctxIsDir
-          ? t("确定删除目录 {name} 及其全部内容？", { name: base })
-          : t("确定删除文件 {name}？", { name: base }),
+        multi
+          ? t("确定删除选中的 {n} 项？", { n: paths.length })
+          : isDir
+            ? t("确定删除目录 {name} 及其全部内容？", { name: shown })
+            : t("确定删除文件 {name}？", { name: shown }),
         t("删除"),
       );
       if (!yes) return;
-      const ok = await invoke<boolean>("delete_local", { path, isDir: this.ctxIsDir })
-        .then(() => true)
-        .catch((err) => {
-          this.toast(String(err));
-          return false;
-        });
-      if (!ok) return;
-      this.toast(t("已删除 {name}", { name: base }));
-      this.refreshAll();
+      try {
+        for (const p of paths) {
+          const dirFlag = multi ? await invoke<boolean>("path_is_dir", { path: p }) : isDir;
+          await invoke<boolean>("delete_local", { path: p, isDir: dirFlag });
+        }
+        this.toast(multi ? t("已删除 {n} 项", { n: paths.length }) : t("已删除 {name}", { name: shown }));
+        this.clearMultiSelect();
+        this.refreshAll();
+      } catch (e) {
+        this.toast(t("删除失败：") + String(e));
+      }
     }
   }
 
