@@ -1924,8 +1924,11 @@ fn archive_update(path: String, entry_name: String, new_content: String) -> Resu
 // 目标已存在自动加序号（a.zip → a (2).zip），zip 条目统一使用 / 分隔符；
 // 通过 uec-transfer 事件实时上报进度（右下角传输浮条），进度按已写字节计
 #[tauri::command]
-fn create_archive(app: tauri::AppHandle, dir: String, name: String, items: Vec<String>) -> Result<String, String> {
-    create_archive_impl(Some(&app), &dir, &name, &items)
+async fn create_archive(app: tauri::AppHandle, dir: String, name: String, items: Vec<String>) -> Result<String, String> {
+    // 压缩是重活：放后台线程执行，避免同步命令占用主线程冻结界面（Tauri 2 同步命令跑在主线程）
+    tauri::async_runtime::spawn_blocking(move || create_archive_impl(Some(&app), &dir, &name, &items))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn create_archive_impl(
