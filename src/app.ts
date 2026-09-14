@@ -10,6 +10,7 @@ import { EditorState, Compartment } from "@codemirror/state";
 import {
   defaultKeymap, historyKeymap, history, undo, redo, insertTab, insertNewlineAndIndent, indentMore, indentLess,
   copyLineDown, deleteLine, moveLineUp, moveLineDown, toggleComment, addCursorAbove, addCursorBelow,
+  selectAll,
 } from "@codemirror/commands";
 import { defaultHighlightStyle, bracketMatching, syntaxHighlighting, indentOnInput, foldGutter, foldKeymap, HighlightStyle } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
@@ -983,6 +984,28 @@ export class App {
       rectKeyboard,
       EditorView.updateListener.of((u) => this.onEditorUpdate(u)),
       keymap.of([
+        // macOS 上 Ctrl 键别名，置于最前保证优先：Ctrl+C/V/X/A 等价于 ⌘C/⌘V/⌘X/⌘A
+        // （defaultKeymap 中 Ctrl-a 为行首、Ctrl-v 为翻页，此处按用户习惯覆盖为复制粘贴语义）
+        { key: "Ctrl-c", run: (v) => {
+          const s = v.state.selection.main;
+          if (s.empty) return false;
+          void navigator.clipboard?.writeText(v.state.sliceDoc(s.from, s.to));
+          return true;
+        }, preventDefault: true },
+        { key: "Ctrl-x", run: (v) => {
+          const s = v.state.selection.main;
+          if (s.empty) return false;
+          void navigator.clipboard?.writeText(v.state.sliceDoc(s.from, s.to));
+          v.dispatch(v.state.replaceSelection(""));
+          return true;
+        }, preventDefault: true },
+        { key: "Ctrl-v", run: (v) => {
+          void navigator.clipboard?.readText().then((t) => {
+            if (t) v.dispatch(v.state.replaceSelection(t));
+          });
+          return true;
+        }, preventDefault: true },
+        { key: "Ctrl-a", run: selectAll, preventDefault: true },
         ...defaultKeymap,
         ...historyKeymap,
         ...closeBracketsKeymap,
