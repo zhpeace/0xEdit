@@ -150,6 +150,8 @@ function defaultPort(proto: string): number {
 export class RemoteBrowser {
   private el: HTMLElement;
   private transferLastPaint = 0;
+  // 剪贴板式复制：{ src, name }，粘贴到当前浏览目录（同协议）
+  private clipboard: { src: string; name: string } | null = null;
   private transfers = new Map<string, {
     kind: string; name: string; bar: HTMLElement; fill: HTMLElement; meta: HTMLElement;
     done: number; total: number; err: string | null;
@@ -269,6 +271,8 @@ export class RemoteBrowser {
         <div class="ctx-item" data-act="saveas">${t("下载到本地…")}</div>
         <div class="ctx-item" data-act="term-here">${t("在终端中打开")}</div>
         <div class="ctx-item" data-act="rename">${t("重命名")}</div>
+        <div class="ctx-item" data-act="copy">${t("复制")}</div>
+        <div class="ctx-item" data-act="paste">${t("粘贴")}</div>
         <div class="ctx-item" data-act="copypath">${t("复制路径")}</div>
         <div class="ctx-item ctx-danger" data-act="del">${t("删除")}</div>
       </div>
@@ -281,6 +285,7 @@ export class RemoteBrowser {
         <div class="ctx-sep"></div>
         <div class="ctx-item" data-act="upload-files">${t("上传文件…")}</div>
         <div class="ctx-item" data-act="upload-cur">${t("上传当前文件")}</div>
+        <div class="ctx-item" data-act="paste">${t("粘贴")}</div>
         <div class="ctx-item" data-act="term">${t("在终端中打开")}</div>
         <div class="ctx-sep"></div>
         <div class="ctx-item ctx-danger" data-act="disconnect">${t("断开连接")}</div>
@@ -353,6 +358,7 @@ export class RemoteBrowser {
         else if (act === "newdir") void this.ctxNewDir();
         else if (act === "upload-files") void this.uploadFiles();
         else if (act === "upload-cur") void this.upload();
+        else if (act === "paste") void this.pasteClipboard();
         else if (act === "term") this.openTerminalHere();
         else if (act === "disconnect") void this.disconnect();
       });
@@ -373,6 +379,8 @@ export class RemoteBrowser {
         e.preventDefault();
         this.selectedPath = null;
         this.ctxNode = null;
+        const pPaste = pctx.querySelector('[data-act="paste"]') as HTMLElement;
+        if (pPaste) this.applyPasteState(pPaste);
         pctx.style.left = `${e.clientX}px`;
         pctx.style.top = `${e.clientY}px`;
         pctx.classList.remove("hidden");
@@ -414,6 +422,8 @@ export class RemoteBrowser {
         const arc = it.dataset.arc === "1";
         it.classList.toggle("hidden", arc);
       });
+      const pasteIt = ctx.querySelector('[data-act="paste"]') as HTMLElement;
+      if (pasteIt) this.applyPasteState(pasteIt);
       ctx.style.left = `${e.clientX}px`;
       ctx.style.top = `${e.clientY}px`;
       ctx.classList.remove("hidden");
@@ -424,6 +434,7 @@ export class RemoteBrowser {
         const act = item.dataset.act!;
         if (act === "newfile") { this.ctxNewFile(); return; }
         if (act === "newdir") { this.ctxNewDir(); return; }
+        if (act === "paste") { void this.pasteClipboard(); return; }
         if (act.startsWith("arc-")) {
           void this.arcCtxAction(act, this.ctxArcNode);
           return;
@@ -443,6 +454,7 @@ export class RemoteBrowser {
         else if (act === "term-here") this.openTerminalHere(this.selectedPath);
         else if (act === "extract" || act === "extract-here" || act === "extract-named") void this.extractRemoteArchive(this.selectedPath, act);
         else if (act === "rename") this.doRename();
+        else if (act === "copy") void this.setClipboard(this.selectedPath);
         else if (act === "copypath") void this.copyPath(this.selectedPath);
         else if (act === "del") this.delPath(this.selectedPath);
       });
@@ -545,6 +557,7 @@ export class RemoteBrowser {
       ["#ftp-ctx-panel [data-act='newdir']", "新建文件夹"],
       ["#ftp-ctx-panel [data-act='upload-files']", "上传文件…"],
       ["#ftp-ctx-panel [data-act='upload-cur']", "上传当前文件"],
+      ["#ftp-ctx-panel [data-act='paste']", "粘贴"],
       ["#ftp-ctx-panel [data-act='term']", "在终端中打开"],
       ["#ftp-ctx-panel [data-act='disconnect']", "断开连接"],
     ];
@@ -565,6 +578,10 @@ export class RemoteBrowser {
     if (ctxRen) ctxRen.textContent = t("重命名");
     const ctxCopy = this.el.querySelector('#ftp-ctx [data-act="copypath"]');
     if (ctxCopy) ctxCopy.textContent = t("复制路径");
+    const ctxCopyFile = this.el.querySelector('#ftp-ctx [data-act="copy"]');
+    if (ctxCopyFile) ctxCopyFile.textContent = t("复制");
+    const ctxPasteFile = this.el.querySelector('#ftp-ctx [data-act="paste"]');
+    if (ctxPasteFile) ctxPasteFile.textContent = t("粘贴");
     const ctxDel = this.el.querySelector('#ftp-ctx [data-act="del"]');
     if (ctxDel) ctxDel.textContent = t("删除");
     // 列表行内按钮（连接/编辑/删除提示）语言跟随
@@ -773,6 +790,46 @@ export class RemoteBrowser {
       this.status(t("已复制路径"));
     } catch {
       this.status(t("复制失败"));
+    }
+  }
+
+  private applyPasteState(it: HTMLElement) {
+    if (this.clipboard) {
+      it.classList.remove("ctx-disabled");
+      it.title = t("粘贴 {name}", { name: this.clipboard.name });
+    } else {
+      it.classList.add("ctx-disabled");
+      it.title = t("请先复制文件或文件夹");
+    }
+  }
+
+  // 剪贴板式复制：记住远程源路径（同协议粘贴）
+  private setClipboard(full: string) {
+    // FTP 树节点路径是相对服务器 cwd 的名字，统一转完整路径（后端按绝对路径复制）
+    const src = this.isSftp() ? full : join(this.path, full);
+    const name = src.split("/").filter(Boolean).pop() || src;
+    this.clipboard = { src, name };
+    this.status(t("已复制 {name}，在目标目录右键粘贴", { name }));
+  }
+
+  // 粘贴到当前浏览目录（this.path）；同名自动加序号；目录贴进自身子目录会被后端拦截
+  private async pasteClipboard() {
+    const cb = this.clipboard;
+    if (!cb) {
+      this.status(t("请先复制文件或文件夹"));
+      return;
+    }
+    if (!this.id || !this.path) return;
+    try {
+      const dest = await invoke<string>(this.isSftp() ? "sftp_copy" : "ftp_copy", {
+        id: this.id,
+        src: cb.src,
+        destDir: this.path,
+      });
+      this.status(t("已粘贴到 {dest}", { dest }));
+      void this.refresh();
+    } catch (e) {
+      this.showError(t("粘贴失败"), String(e));
     }
   }
 

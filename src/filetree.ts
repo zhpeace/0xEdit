@@ -39,6 +39,7 @@ interface ArcView {
 export class FileTree {
   private el: HTMLElement;
   private curDir = "";
+  private clipboard: { path: string; name: string } | null = null;
   private arcView: ArcView | null = null;
   private arcTree: ArchiveNode[] = [];
   private arcTreePath = "";
@@ -85,6 +86,8 @@ export class FileTree {
       <div class="ctx-item" data-act="open">${t("打开")}</div>
       <div class="ctx-item" data-act="openwith">${t("用默认应用打开")}</div>
       <div class="ctx-item" data-act="reveal">${t("打开所在文件夹")}</div>
+      <div class="ctx-item" data-act="copy">${t("复制")}</div>
+      <div class="ctx-item" data-act="paste">${t("粘贴")}</div>
       <div class="ctx-item" data-act="copy-to">${t("复制到…")}</div>
       <div class="ctx-item" data-act="move-to">${t("移动到…")}</div>
       <div class="ctx-item" data-act="extract">${t("解压文件…")}</div>
@@ -609,6 +612,8 @@ export class FileTree {
       open: "打开",
       openwith: "用默认应用打开",
       reveal: "打开所在文件夹",
+      copy: "复制",
+      paste: "粘贴",
       "copy-to": "复制到…",
       "move-to": "移动到…",
       extract: "解压文件…",
@@ -645,9 +650,11 @@ export class FileTree {
       this.ctxIsDir = true;
       this.ctx.querySelectorAll<HTMLElement>("[data-act]").forEach((it) => {
         const arc = it.dataset.arc === "1";
-        const keep = ["refresh", "newfile", "newdir", "terminal"].includes(it.dataset.act!);
+        const keep = ["refresh", "newfile", "newdir", "paste", "terminal"].includes(it.dataset.act!);
         it.classList.toggle("hidden", arc || !keep);
       });
+      const pasteIt = this.ctx.querySelector('[data-act="paste"]') as HTMLElement;
+      if (pasteIt) this.applyPasteState(pasteIt);
       this.ctx.querySelectorAll<HTMLElement>(".ctx-sep").forEach((sep) => sep.classList.add("hidden"));
       this.ctx.style.left = `${e.clientX}px`;
       this.ctx.style.top = `${e.clientY}px`;
@@ -681,6 +688,35 @@ export class FileTree {
     if (isArcFile) {
       const base = nm.replace(/(\.tar\.gz|\.tar\.bz2|\.tar\.xz|\.tar\.zst|\.tgz|\.tbz2|\.txz|\.tzst|\.zipx|\.zip|\.jar|\.war|\.ear|\.apk|\.aar|\.rar|\.7z|\.iso|\.cab|\.cpio|\.deb|\.rpm|\.zst|\.lz4|\.tar)$/i, "") || nm;
       (this.ctx.querySelector('[data-name-label]') as HTMLElement).textContent = base;
+    }
+    const pasteIt = this.ctx.querySelector('[data-act="paste"]') as HTMLElement;
+    if (pasteIt) this.applyPasteState(pasteIt);
+  }
+
+  private applyPasteState(it: HTMLElement) {
+    if (this.clipboard) {
+      it.classList.remove("ctx-disabled");
+      it.title = t("粘贴 {name}", { name: this.clipboard.name });
+    } else {
+      it.classList.add("ctx-disabled");
+      it.title = t("请先复制文件或文件夹");
+    }
+  }
+
+  private async pasteLocal() {
+    const cb = this.clipboard;
+    if (!cb) {
+      this.toast(t("请先复制文件或文件夹"));
+      return;
+    }
+    if (!this.curDir) return;
+    try {
+      // 复用后端 copy_to：重名自动加序号、目录复制进自身子目录会拦截
+      const dest = await invoke<string>("copy_to", { src: cb.path, destDir: this.curDir });
+      this.toast(t("已粘贴到 {dest}", { dest }));
+      this.refreshAll();
+    } catch (e) {
+      this.toast(t("粘贴失败：") + String(e));
     }
   }
 
@@ -755,6 +791,18 @@ export class FileTree {
       } catch (e) {
         this.toast(t("打开失败：") + String(e));
       }
+      return;
+    }
+    if (act === "copy") {
+      // 剪贴板式复制：记住源路径，到目标目录右键「粘贴」
+      if (!path) return;
+      const name = path.split("/").pop() || path.split("\\").pop() || path;
+      this.clipboard = { path, name };
+      this.toast(t("已复制 {name}，在目标目录右键粘贴", { name }));
+      return;
+    }
+    if (act === "paste") {
+      await this.pasteLocal();
       return;
     }
     if (act === "copy-to" || act === "move-to") {

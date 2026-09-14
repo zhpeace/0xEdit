@@ -2562,6 +2562,148 @@ fn move_to(src: String, dest_dir: String) -> Result<String, String> {
     Ok(dest.to_string_lossy().into_owned())
 }
 
+// ---------- 远程服务器内部复制（右键「复制 / 粘贴」，目标目录内同名自动加序号） ----------
+
+fn ftp_err(s: impl Into<String>) -> ftp::FtpError {
+    ftp::FtpError::ConnectionError(std::io::Error::new(std::io::ErrorKind::Other, s.into()))
+}
+
+/// SFTP 递归复制：src → dst（dst 为最终目标路径）
+fn copy_sftp_recursive(sftp: &ssh2::Sftp, src: &Path, dst: &Path) -> Result<(), String> {
+    let st = sftp.stat(src).map_err(|e| e.to_string())?;
+    if st.is_dir() {
+        sftp.mkdir(dst, 0o755).map_err(|e| e.to_string())?;
+        let entries = sftp.readdir(src).map_err(|e| e.to_string())?;
+        for (p, _) in entries {
+            let fname = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if fname.is_empty() || fname.starts_with('.') {
+                continue;
+            }
+            copy_sftp_recursive(sftp, &p, &dst.join(&fname))?;
+        }
+    } else {
+        let mut r = sftp.open(src).map_err(|e| e.to_string())?;
+        let mut w = sftp.create(dst).map_err(|e| e.to_string())?;
+        pump_copy(&mut r, &mut w).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn unique_sftp_name(sftp: &ssh2::Sftp, dest_dir: &str, name: &str) -> Result<String, String> {
+    let first = format!("{dest_dir}/{name}");
+    if sftp.stat(Path::new(&first)).is_err() {
+        return Ok(first);
+    }
+    for i in 2.. {
+        let c = format!("{dest_dir}/{name} ({i})");
+        if sftp.stat(Path::new(&c)).is_err() {
+            return Ok(c);
+        }
+    }
+    Err("无法生成唯一名称".to_string())
+}
+
+#[tauri::command]
+async fn sftp_copy(id: String, src: String, dest_dir: String, state: tauri::State<'_, SshState>) -> Result<String, String> {
+    let st = SshState(state.0.clone());
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        with_ssh(&id, &st, |ses| {
+            let sftp = ses.sftp().map_err(|e| e.to_string())?;
+            let src_p = Path::new(&src);
+            let st0 = sftp.stat(src_p).map_err(|e| format!("源不存在: {e}"))?;
+            let name = src_p.file_name().map(|n| n.to_string_lossy().into_owned())
+                .ok_or_else(|| "无法确定文件名".to_string())?;
+            let dest = unique_sftp_name(&sftp, &dest_dir, &name)?;
+            // 目录复制到自己内部会无限递归，禁止
+            if st0.is_dir() {
+                let dst_p = Path::new(&dest);
+                if dst_p != src_p && dst_p.starts_with(src_p) {
+                    return Err("目标不能位于源目录内部".to_string());
+                }
+            }
+            copy_sftp_recursive(&sftp, src_p, Path::new(&dest))?;
+            Ok(dest)
+        })
+    })
+    .await
+    .map_err(|e| format!("复制任务被中止: {e}"))?
+}
+
+/// FTP 递归复制（全程使用绝对路径；目录由 cwd 成功与否判定）
+fn ftp_copy_recursive(ftp: &mut FtpStream, src_abs: &str, dst_abs: &str) -> Result<(), String> {
+    if ftp.cwd(src_abs).is_ok() {
+        ftp.mkdir(dst_abs).map_err(|e| e.to_string())?;
+        let lines = ftp.list(None).map_err(|e| e.to_string())?;
+        for line in lines {
+            if let Some((n, is_dir, _)) = parse_ftp_list_line(line.trim_start(), true) {
+                if is_dir {
+                    ftp_copy_recursive(ftp, &format!("{src_abs}/{n}"), &format!("{dst_abs}/{n}"))?;
+                } else {
+                    let mut r = ftp.simple_retr(&format!("{src_abs}/{n}")).map_err(|e| e.to_string())?;
+                    ftp.put(&format!("{dst_abs}/{n}"), &mut r).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    } else {
+        let mut r = ftp.simple_retr(src_abs).map_err(|e| e.to_string())?;
+        ftp.put(dst_abs, &mut r).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn ftp_name_exists(ftp: &mut FtpStream, dest_dir: &str, name: &str) -> Result<bool, String> {
+    let saved = ftp.pwd().map_err(|e| e.to_string())?;
+    let lines = ftp.list(Some(dest_dir)).map_err(|e| e.to_string())?;
+    let _ = ftp.cwd(&saved);
+    for line in lines {
+        if let Some((n, _, _)) = parse_ftp_list_line(line.trim_start(), true) {
+            if n == name {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn unique_ftp_name(ftp: &mut FtpStream, dest_dir: &str, name: &str) -> Result<String, String> {
+    if !ftp_name_exists(ftp, dest_dir, name)? {
+        return Ok(format!("{dest_dir}/{name}"));
+    }
+    for i in 2.. {
+        let c = format!("{name} ({i})");
+        if !ftp_name_exists(ftp, dest_dir, &c)? {
+            return Ok(format!("{dest_dir}/{c}"));
+        }
+    }
+    Err("无法生成唯一名称".to_string())
+}
+
+#[tauri::command]
+async fn ftp_copy(id: String, src: String, dest_dir: String, state: tauri::State<'_, FtpState>) -> Result<String, String> {
+    let st = FtpState(state.0.clone());
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        with_ftp(&id, &st, |ftp| {
+            let name = src.rsplit('/').find(|s| !s.is_empty()).unwrap_or(&src).to_string();
+            let saved = ftp.pwd()?;
+            let is_dir = ftp.cwd(&src).is_ok();
+            let _ = ftp.cwd(&saved);
+            let dest = unique_ftp_name(ftp, &dest_dir, &name).map_err(ftp_err)?;
+            // 目录复制到自己内部会无限递归，禁止
+            if is_dir {
+                let src_norm = src.trim_end_matches('/');
+                let dst_norm = dest.trim_end_matches('/');
+                if dst_norm != src_norm && dst_norm.starts_with(src_norm) {
+                    return Err(ftp_err("目标不能位于源目录内部"));
+                }
+            }
+            ftp_copy_recursive(ftp, &src, &dest).map_err(ftp_err)?;
+            Ok(dest)
+        })
+    })
+    .await
+    .map_err(|e| format!("复制任务被中止: {e}"))?
+}
+
 #[tauri::command]
 fn new_window(app: tauri::AppHandle) -> Result<(), String> {    use tauri::{WebviewUrl, WebviewWindowBuilder};
     let label = format!("win-{}", std::time::SystemTime::now()
@@ -2641,6 +2783,8 @@ pub fn run() {
             delete_local,
             copy_to,
             move_to,
+            sftp_copy,
+            ftp_copy,
             write_binary_file,
             remote_term::open_remote_shell,
             remote_term::write_shell,
