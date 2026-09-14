@@ -528,6 +528,8 @@ export class RemoteBrowser {
     });
     this.initTransferBar();
     onLangChange(() => this.localizePanel());
+    // 远程树快捷键：⌘C/⌘V（mac）与 Ctrl+C/V（Win/Linux）复制/粘贴远程文件
+    document.addEventListener("keydown", (e) => this.onGlobalKey(e));
     this.ensureRemoteSortBar();
   }
 
@@ -793,8 +795,26 @@ export class RemoteBrowser {
     }
   }
 
-  private applyPasteState(it: HTMLElement) {
-    if (this.clipboard) {
+  private onGlobalKey(e: KeyboardEvent) {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    const tgt = e.target as HTMLElement | null;
+    if (tgt && (tgt.closest(".cm-editor") || tgt.closest(".xterm") || tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable)) return;
+    const k = e.key.toLowerCase();
+    if (k === "c") {
+      const sel = this.selectedNode;
+      if (!sel || sel.dataset.actions === "up" || !this.id) return;
+      const full = sel.dataset.path || sel.dataset.name;
+      if (!full) return;
+      e.preventDefault();
+      this.setClipboard(this.isSftp() ? full : join(this.path, full));
+    } else if (k === "v") {
+      if (!this.clipboard) return;
+      e.preventDefault();
+      void this.pasteClipboard();
+    }
+  }
+
+  private applyPasteState(it: HTMLElement) {    if (this.clipboard) {
       it.classList.remove("ctx-disabled");
       it.title = t("粘贴 {name}", { name: this.clipboard.name });
     } else {

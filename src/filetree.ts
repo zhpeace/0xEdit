@@ -103,6 +103,8 @@ export class FileTree {
     document.body.appendChild(this.ctx);
     el.addEventListener("contextmenu", (e) => this.onCtx(e));
     onLangChange(() => this.localizeCtx());
+    // 文件树快捷键：⌘C/⌘V（mac）与 Ctrl+C/V（Win/Linux）复制/粘贴文件
+    document.addEventListener("keydown", (e) => this.onGlobalKey(e));
     this.ctx.querySelectorAll<HTMLElement>(".ctx-item").forEach((item) => {
       item.addEventListener("click", () => {
         this.ctx.classList.add("hidden");
@@ -691,6 +693,27 @@ export class FileTree {
     }
     const pasteIt = this.ctx.querySelector('[data-act="paste"]') as HTMLElement;
     if (pasteIt) this.applyPasteState(pasteIt);
+  }
+
+  private onGlobalKey(e: KeyboardEvent) {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    const tgt = e.target as HTMLElement | null;
+    if (tgt && (tgt.closest(".cm-editor") || tgt.closest(".xterm") || tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable)) return;
+    const k = e.key.toLowerCase();
+    if (k === "c") {
+      const sel = this.selected;
+      if (!sel) return;
+      const path = sel.dataset.path;
+      if (!path) return;
+      e.preventDefault();
+      const name = path.split("/").pop() || path.split("\\").pop() || path;
+      this.clipboard = { path, name };
+      this.toast(t("已复制 {name}，在目标目录右键粘贴", { name }));
+    } else if (k === "v") {
+      if (!this.clipboard) return;
+      e.preventDefault();
+      void this.pasteLocal();
+    }
   }
 
   private applyPasteState(it: HTMLElement) {

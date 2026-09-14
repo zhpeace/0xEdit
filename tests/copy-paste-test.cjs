@@ -186,6 +186,27 @@ const eq = (got, exp, name) => (got === exp ? ok(`${name}: ${JSON.stringify(got)
   has(ftpCopy && ftpCopy.src === "/a.txt", "远程粘贴调用 ftp_copy 且源正确");
   eq(ftpCopy && ftpCopy.destDir, "/", "远程粘贴目标 = 当前远程目录 /");
 
+  // ---------- C) 快捷键 ⌘C/⌘V（文件树聚焦时） ----------
+  console.log("\n[C] 快捷键复制/粘贴");
+  // 切回本地 tab
+  await page.locator('.sb-tab[data-sb="local"]').click();
+  await page.waitForTimeout(300);
+  // 单击选中 note.md 节点 → ⌘C 复制
+  await page.locator('#filetree .ft-node[data-path="/tmp/note.md"]').click();
+  await page.waitForTimeout(150);
+  await page.keyboard.press("Meta+c");
+  await page.waitForTimeout(200);
+  const kCopyToast = await page.evaluate(() => document.body.textContent || "");
+  has(kCopyToast.includes("已复制 note.md"), "⌘C 复制选中文件并提示");
+  // 切换到 docs 目录（进入）后 ⌘V 粘贴
+  await page.locator('#filetree .ft-node[data-path="/tmp/docs"]').dblclick();
+  await page.waitForTimeout(400);
+  await page.keyboard.press("Meta+v");
+  await page.waitForTimeout(250);
+  const kCopy = await page.evaluate(() => window.__lastCopy || null);
+  has(kCopy && kCopy.src === "/tmp/note.md", "⌘V 粘贴调用 copy_to 且源正确");
+  eq(kCopy && kCopy.destDir, "/tmp/docs", "⌘V 粘贴目标 = 当前浏览目录 /tmp/docs");
+
   // ---------- 运行期错误 ----------
   console.log("\n[汇总]");
   const realErrors = errors.filter((e) => !e.includes("favicon"));
