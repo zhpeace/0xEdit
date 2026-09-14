@@ -949,6 +949,54 @@ export class App {
   private extForDoc(doc: Document): import("@codemirror/state").Extension[] {
     const langPath = this.docLangPath(doc);
     const lang = langPath ? langForPath(langPath) : { ext: [], name: t("纯文本") };
+    // 复制/剪切/粘贴统一走 navigator.clipboard（带手势），并降级 execCommand，
+    // 兼容 Tauri WKWebView 中 CodeMirror 原生 ⌘ 复制粘贴不可靠的问题。
+    const cmCopyToClipboard = (v: EditorView): boolean => {
+      const s = v.state.selection.main;
+      if (s.empty) return false;
+      const text = v.state.sliceDoc(s.from, s.to);
+      const legacy = () => {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); } catch { /* ignore */ }
+        ta.remove();
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(legacy);
+      } else {
+        legacy();
+      }
+      return true;
+    };
+    const cmCutFromClipboard = (v: EditorView): boolean => {
+      if (!cmCopyToClipboard(v)) return false;
+      v.dispatch(v.state.replaceSelection(""));
+      return true;
+    };
+    const cmPasteFromClipboard = (v: EditorView): boolean => {
+      const insert = (t: string) => { if (t) { v.dispatch(v.state.replaceSelection(t)); v.focus(); } };
+      // 同步 legacy 优先：临时 textarea 粘贴读回；为空再走异步 clipboard API
+      const ta = document.createElement("textarea");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      let pasted = "";
+      try { document.execCommand("paste"); pasted = ta.value; } catch { pasted = ""; }
+      ta.remove();
+      if (pasted) {
+        insert(pasted);
+      } else if (navigator.clipboard?.readText) {
+        navigator.clipboard.readText().then(insert).catch(() => v.focus());
+      } else {
+        v.focus();
+      }
+      return true;
+    };
     const base: import("@codemirror/state").Extension[] = [
       lineNumbers(),
       highlightActiveLineGutter(),
@@ -984,27 +1032,14 @@ export class App {
       rectKeyboard,
       EditorView.updateListener.of((u) => this.onEditorUpdate(u)),
       keymap.of([
-        // macOS 上 Ctrl 键别名，置于最前保证优先：Ctrl+C/V/X/A 等价于 ⌘C/⌘V/⌘X/⌘A
-        // （defaultKeymap 中 Ctrl-a 为行首、Ctrl-v 为翻页，此处按用户习惯覆盖为复制粘贴语义）
-        { key: "Ctrl-c", run: (v) => {
-          const s = v.state.selection.main;
-          if (s.empty) return false;
-          void navigator.clipboard?.writeText(v.state.sliceDoc(s.from, s.to));
-          return true;
-        }, preventDefault: true },
-        { key: "Ctrl-x", run: (v) => {
-          const s = v.state.selection.main;
-          if (s.empty) return false;
-          void navigator.clipboard?.writeText(v.state.sliceDoc(s.from, s.to));
-          v.dispatch(v.state.replaceSelection(""));
-          return true;
-        }, preventDefault: true },
-        { key: "Ctrl-v", run: (v) => {
-          void navigator.clipboard?.readText().then((t) => {
-            if (t) v.dispatch(v.state.replaceSelection(t));
-          });
-          return true;
-        }, preventDefault: true },
+        // ⌘ 与 Ctrl 统一绑定到自实现复制粘贴（defaultKeymap 中 Ctrl-a 为行首、Ctrl-v 为翻页，此处覆盖为复制粘贴语义）
+        { key: "Mod-c", run: cmCopyToClipboard, preventDefault: true },
+        { key: "Mod-x", run: cmCutFromClipboard, preventDefault: true },
+        { key: "Mod-v", run: cmPasteFromClipboard, preventDefault: true },
+        { key: "Mod-a", run: selectAll, preventDefault: true },
+        { key: "Ctrl-c", run: cmCopyToClipboard, preventDefault: true },
+        { key: "Ctrl-x", run: cmCutFromClipboard, preventDefault: true },
+        { key: "Ctrl-v", run: cmPasteFromClipboard, preventDefault: true },
         { key: "Ctrl-a", run: selectAll, preventDefault: true },
         ...defaultKeymap,
         ...historyKeymap,
