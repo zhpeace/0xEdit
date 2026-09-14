@@ -2759,6 +2759,13 @@ fn new_window(app: tauri::AppHandle) -> Result<(), String> {    use tauri::{Webv
     Ok(())
 }
 
+// 读取系统剪贴板文本（arboard 直接访问 NSPasteboard，无 WebView 授权横幅）
+#[tauri::command]
+fn clipboard_read_text() -> Result<String, String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    cb.get_text().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2828,6 +2835,7 @@ pub fn run() {
             sftp_copy,
             ftp_copy,
             write_binary_file,
+            clipboard_read_text,
             remote_term::open_remote_shell,
             remote_term::write_shell,
             remote_term::resize_shell,

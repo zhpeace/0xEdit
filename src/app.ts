@@ -979,22 +979,29 @@ export class App {
     };
     const cmPasteFromClipboard = (v: EditorView): boolean => {
       const insert = (t: string) => { if (t) { v.dispatch(v.state.replaceSelection(t)); v.focus(); } };
-      // 同步 legacy 优先：临时 textarea 粘贴读回；为空再走异步 clipboard API
-      const ta = document.createElement("textarea");
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.focus();
-      let pasted = "";
-      try { document.execCommand("paste"); pasted = ta.value; } catch { pasted = ""; }
-      ta.remove();
-      if (pasted) {
-        insert(pasted);
-      } else if (navigator.clipboard?.readText) {
-        navigator.clipboard.readText().then(insert).catch(() => v.focus());
-      } else {
-        v.focus();
-      }
+      // 优先走 Rust 直读系统剪贴板（arboard，无 macOS 授权横幅），再降级 navigator.clipboard / execCommand
+      void invoke("clipboard_read_text")
+        .then((t) => insert(t as string))
+        .catch(() => {
+          const legacy = () => {
+            const ta = document.createElement("textarea");
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.focus();
+            let pasted = "";
+            try { document.execCommand("paste"); pasted = ta.value; } catch { pasted = ""; }
+            ta.remove();
+            if (pasted) {
+              insert(pasted);
+            } else if (navigator.clipboard?.readText) {
+              navigator.clipboard.readText().then(insert).catch(() => v.focus());
+            } else {
+              v.focus();
+            }
+          };
+          legacy();
+        });
       return true;
     };
     const base: import("@codemirror/state").Extension[] = [
