@@ -2412,6 +2412,34 @@ mod tests {
         assert_eq!(prev.text, "hello");
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn split_name_basic() {
+        assert_eq!(split_name("a.txt"), ("a".to_string(), ".txt".to_string()));
+        assert_eq!(split_name("report.v1.2026.md"), ("report.v1.2026".to_string(), ".md".to_string()));
+        assert_eq!(split_name("noext"), ("noext".to_string(), String::new()));
+        assert_eq!(split_name("trailing."), ("trailing.".to_string(), String::new()));
+        assert_eq!(split_name(".gitignore"), (".gitignore".to_string(), String::new()));
+        assert_eq!(split_name("a.tar.gz"), ("a.tar".to_string(), ".gz".to_string()));
+    }
+
+    #[test]
+    fn unique_dest_inserts_before_extension() {
+        let tmp = std::env::temp_dir().join(format!("uec_unittest_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("a.txt"), "x").unwrap();
+        // 已存在 → a (2).txt（扩展名保留）
+        assert_eq!(unique_dest(&tmp.join("a.txt")).file_name().unwrap().to_str().unwrap(), "a (2).txt");
+        fs::write(tmp.join("a (2).txt"), "x").unwrap();
+        assert_eq!(unique_dest(&tmp.join("a.txt")).file_name().unwrap().to_str().unwrap(), "a (3).txt");
+        // 无扩展名 → noext (2)
+        fs::write(tmp.join("noext"), "x").unwrap();
+        assert_eq!(unique_dest(&tmp.join("noext")).file_name().unwrap().to_str().unwrap(), "noext (2)");
+        // 不存在 → 原样
+        assert_eq!(unique_dest(&tmp.join("b.txt")).file_name().unwrap().to_str().unwrap(), "b.txt");
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }
 
 // ============ 本地文件操作（右键菜单） ============
@@ -2467,17 +2495,29 @@ fn delete_local(path: String, is_dir: bool) -> Result<(), String> {
 }
 
 /// 目标已存在时生成不覆盖的路径：file.txt → file (2).txt → file (3).txt …
+/// 拆分文件名 → (主名, 扩展名含点)。序号应插在扩展名前：a.txt → a (2).txt；
+/// 无扩展名/隐藏文件（.gitignore 等）整体作为主名，序号加在末尾。
+fn split_name(fname: &str) -> (String, String) {
+    match fname.rfind('.') {
+        Some(idx) if idx > 0 && idx < fname.len() - 1 => {
+            (fname[..idx].to_string(), fname[idx..].to_string())
+        }
+        _ => (fname.to_string(), String::new()),
+    }
+}
+
 fn unique_dest(dest: &std::path::Path) -> std::path::PathBuf {
     if !dest.exists() {
         return dest.to_path_buf();
     }
     let parent = dest.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let name = dest
+    let fname = dest
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "copy".to_string());
+    let (stem, ext) = split_name(&fname);
     for i in 2.. {
-        let candidate = parent.join(format!("{name} ({i})"));
+        let candidate = parent.join(format!("{stem} ({i}){ext}"));
         if !candidate.exists() {
             return candidate;
         }
@@ -2594,10 +2634,11 @@ fn unique_sftp_name(sftp: &ssh2::Sftp, dest_dir: &str, name: &str) -> Result<Str
     if sftp.stat(Path::new(&first)).is_err() {
         return Ok(first);
     }
+    let (stem, ext) = split_name(name);
     for i in 2.. {
-        let c = format!("{dest_dir}/{name} ({i})");
-        if sftp.stat(Path::new(&c)).is_err() {
-            return Ok(c);
+        let c = format!("{stem} ({i}){ext}");
+        if sftp.stat(Path::new(&format!("{dest_dir}/{c}"))).is_err() {
+            return Ok(format!("{dest_dir}/{c}"));
         }
     }
     Err("无法生成唯一名称".to_string())
@@ -2669,8 +2710,9 @@ fn unique_ftp_name(ftp: &mut FtpStream, dest_dir: &str, name: &str) -> Result<St
     if !ftp_name_exists(ftp, dest_dir, name)? {
         return Ok(format!("{dest_dir}/{name}"));
     }
+    let (stem, ext) = split_name(name);
     for i in 2.. {
-        let c = format!("{name} ({i})");
+        let c = format!("{stem} ({i}){ext}");
         if !ftp_name_exists(ftp, dest_dir, &c)? {
             return Ok(format!("{dest_dir}/{c}"));
         }
