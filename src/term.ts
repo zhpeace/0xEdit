@@ -9,6 +9,19 @@ import { t } from "./i18n";
 const MIN_FONT = 11;
 const MAX_FONT = 24;
 
+// 读系统剪贴板：优先 Rust 直读（无 macOS 授权横幅），失败降级 WebView API
+async function readClipboardText(): Promise<string> {
+  try {
+    const t = await invoke("clipboard_read_text");
+    if (typeof t === "string" && t) return t;
+  } catch { /* fallthrough */ }
+  try {
+    return await navigator.clipboard.readText();
+  } catch {
+    return "";
+  }
+}
+
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
@@ -82,12 +95,9 @@ export class RemoteTerm {
     // 右键粘贴（macOS 习惯）
     this.el.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      void navigator.clipboard
-        .readText()
-        .then((txt) => {
-          if (txt) this.term.paste(txt);
-        })
-        .catch(() => {});
+      void readClipboardText().then((txt) => {
+        if (txt) this.term.paste(txt);
+      });
     });
   }
 
@@ -119,12 +129,9 @@ export class RemoteTerm {
       return true; // 无选区：交给终端（Ctrl+C 中断）
     }
     if (k === "v") {
-      void navigator.clipboard
-        .readText()
-        .then((txt) => {
-          if (txt) this.term.paste(txt);
-        })
-        .catch(() => {});
+      void readClipboardText().then((txt) => {
+        if (txt) this.term.paste(txt);
+      });
       e.preventDefault();
       return false;
     }

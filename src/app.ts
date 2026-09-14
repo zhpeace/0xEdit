@@ -2084,12 +2084,19 @@ export class App {
         this.view.dispatch(this.view.state.replaceSelection(""));
       }
     } else if (cmd === "paste") {
-      el.focus();
-      document.execCommand("paste");
-      const pasted = el.value;
-      if (pasted && this.view) {
-        this.view.dispatch(this.view.state.replaceSelection(pasted));
-      }
+      // 优先 Rust 直读系统剪贴板（无 macOS 授权横幅），失败降级 execCommand 读回
+      const insert = (pasted: string) => {
+        if (pasted && this.view) {
+          this.view.dispatch(this.view.state.replaceSelection(pasted));
+        }
+      };
+      void invoke("clipboard_read_text")
+        .then((t) => insert(t as string))
+        .catch(() => {
+          el.focus();
+          document.execCommand("paste");
+          insert(el.value);
+        });
     }
     el.remove();
     this.view?.focus();
