@@ -511,6 +511,74 @@ body {
   padding: 0 6px 8px;
 }
 
+/* 服务器分组标题（secureCRT 风格文件夹树） */
+.rs-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 12px 8px 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--txt, #ddd);
+  cursor: pointer;
+  user-select: none;
+  border-top: 1px solid color-mix(in srgb, var(--txt-dim, #999) 14%, transparent);
+  margin-top: 4px;
+}
+.rs-group:first-child {
+  border-top: none;
+  margin-top: 0;
+}
+.rs-group:hover {
+  color: #fff;
+}
+.rs-group-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  flex-shrink: 0;
+}
+.rs-group-arrow svg {
+  display: block;
+}
+.rs-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+.rs-group.rs-group-ungrouped {
+  color: var(--txt-dim, #999);
+  cursor: default;
+}
+.rs-group.rs-group-ungrouped .rs-group-arrow {
+  opacity: 0.55;
+}
+.rs-group-count {
+  margin-left: auto;
+  font-weight: 400;
+  background: var(--bg2, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  padding: 0 7px;
+  font-size: 11px;
+  color: var(--txt-dim, #999);
+}
+/* 服务器拖拽 */
+.rs-item.rs-dragging {
+  opacity: 0.4;
+}
+.rs-group.rs-drop-hover,
+.rs-group.rs-drop-zone.rs-drop-hover {
+  outline: 1px dashed var(--accent, #4a9eff);
+  outline-offset: -1px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent, #4a9eff) 12%, transparent);
+}
+.rs-group.rs-drop-zone {
+  margin-top: 6px;
+}
+
 .rs-item {
   display: flex;
   align-items: center;
@@ -540,8 +608,12 @@ body {
 }
 
 .rs-item-ico {
-  font-size: 15px;
+  display: flex;
+  align-items: center;
   flex-shrink: 0;
+}
+.rs-item-ico svg {
+  display: block;
 }
 
 .rs-item-main {
@@ -581,12 +653,35 @@ body {
 
 .rs-item-ops {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 3px;
   flex-shrink: 0;
 }
 
 .rs-op {
-  padding: 2px 8px;
+  height: 18px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-dim);
+  box-sizing: border-box;
+}
+.rs-op:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+/* 图标类操作按钮（复制/编辑/删除）等高正方形 */
+.rs-op[data-op="copy"],
+.rs-op[data-op="edit"],
+.rs-op[data-op="del"] {
+  width: 18px;
+  height: 18px;
+  padding: 0;
   font-size: 11px;
 }
 
@@ -1859,6 +1954,40 @@ button.primary,
   justify-content: flex-end;
 }
 
+
+/* 分组自定义下拉 */
+.acct-group-wrap {
+  position: relative;
+  display: block;
+  flex: 1;
+}
+.acct-group-pick {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--bg-elev, #1e1e1e);
+  border: 1px solid var(--bd, #333);
+  border-radius: 6px;
+  max-height: 180px;
+  overflow: auto;
+  z-index: 60;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.acct-group-pick-item {
+  padding: 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--txt, #ddd);
+}
+.acct-group-pick-item:hover {
+  background: rgba(51, 112, 255, 0.16);
+}
+.acct-group-pick-empty {
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--txt-dim, #999);
+}
 /* ---------------- FTP 账户管理器 ---------------- */
 .acct-modal {
   width: 660px;
@@ -3124,4 +3253,31 @@ html[data-theme="github-light"] {
 .tr-close:hover {
   background: rgba(127, 127, 127, 0.22);
   color: #fff;
+}
+
+.rs-dragging { opacity: 0.35; }
+.rs-drop-hover { outline: 1.5px dashed var(--accent, #3370ff); outline-offset: -2px; background: rgba(51,112,255,0.14); border-radius: 6px; }
+
+/* 拖拽跟随浮层 */
+.rs-drag-ghost {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elev, #232323);
+  border: 1px solid var(--accent, #3370ff);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--fg, #ddd);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  opacity: 0.92;
+  white-space: nowrap;
+  max-width: 260px;
+}
+.rs-drag-ghost > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

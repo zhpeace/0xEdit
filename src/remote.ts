@@ -44,6 +44,8 @@ interface SessionState {
   expanded: Set<string>;
   loading: Set<string>;
   selectedPath: string | null;
+  selectedPaths: Set<string>;
+  selectAnchor: string | null;
   ctxIsDir: boolean;
   selNode: HTMLElement | null;
   arcView: { tmp: string; kind: string; arcName: string; remotePath: string; dir: string } | null;
@@ -74,6 +76,7 @@ export interface RemoteSite {
   xfer: "auto" | "ascii" | "binary";
   timeout: number;
   retry: number;
+  group: string;
 }
 
 const REMOTE_STORE_KEY = "uec.remotes";
@@ -101,6 +104,7 @@ function newAccount(): RemoteSite {
     xfer: "auto",
     timeout: 30,
     retry: 3,
+    group: "",
   };
 }
 
@@ -124,6 +128,7 @@ function normalizeSite(s: any): RemoteSite {
     xfer: s.xfer || "auto",
     timeout: s.timeout || 30,
     retry: s.retry || 3,
+    group: s.group || "",
   };
 }
 
@@ -151,7 +156,7 @@ export class RemoteBrowser {
   private el: HTMLElement;
   private transferLastPaint = 0;
   // 剪贴板式复制：{ src, name }，粘贴到当前浏览目录（同协议）
-  private clipboard: { src: string; name: string } | null = null;
+  private clipboard: { srcs: string[]; name: string } | null = null;
   private transfers = new Map<string, {
     kind: string; name: string; bar: HTMLElement; fill: HTMLElement; meta: HTMLElement;
     done: number; total: number; err: string | null;
@@ -159,6 +164,7 @@ export class RemoteBrowser {
   // ---- 多会话（MobaXterm 式）：每台已连接服务器一个 SessionState ----
   private sessions = new Map<string, SessionState>();
   private activeSiteId: string | null = null;
+  private ctxGroup: string | null = null;
   private listStatusTimer = 0;
   private sites: RemoteSite[] = [];
   private selSiteId: string | null = null;
@@ -289,6 +295,19 @@ export class RemoteBrowser {
         <div class="ctx-item" data-act="term">${t("在终端中打开")}</div>
         <div class="ctx-sep"></div>
         <div class="ctx-item ctx-danger" data-act="disconnect">${t("断开连接")}</div>
+      </div>
+      <div id="rs-group-ctx" class="ctx-menu hidden">
+        <div class="ctx-item" data-act="new-subgroup">${t("新建子分组…")}</div>
+        <div class="ctx-item" data-act="rename-group">${t("重命名分组")}</div>
+        <div class="ctx-item ctx-danger" data-act="del-group">${t("删除分组")}</div>
+        <div class="ctx-sep"></div>
+        <div class="ctx-item" data-act="collapse-all">${t("折叠全部")}</div>
+        <div class="ctx-item" data-act="expand-all">${t("展开全部")}</div>
+      </div>
+      <div id="rs-list-ctx" class="ctx-menu hidden">
+        <div class="ctx-item" data-act="new-group">${t("新建分组…")}</div>
+        <div class="ctx-sep"></div>
+        <div class="ctx-item" data-act="new-site">${t("新建连接")}</div>
       </div>`;
 
     el.querySelector("#rs-new")!.addEventListener("click", () => this.openAccountManager(true));
@@ -298,6 +317,42 @@ export class RemoteBrowser {
     el.querySelector("#rs-panel-tree")!.addEventListener("click", () => this.setPanelTab("tree"));
     el.querySelector("#rs-disconnect")!.addEventListener("click", () => void this.disconnect());
     el.querySelector("#rs-term")!.addEventListener("click", () => this.openTerminalHere());
+    const gctx = el.querySelector<HTMLElement>("#rs-group-ctx")!;
+    gctx.querySelectorAll<HTMLElement>(".ctx-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        gctx.classList.add("hidden");
+        void this.groupAction(item.dataset.act!);
+      });
+    });
+    el.addEventListener("click", (e) => {
+      if (!gctx.contains(e.target as Node)) gctx.classList.add("hidden");
+    });
+    const lctx = el.querySelector<HTMLElement>("#rs-list-ctx")!;
+    lctx.querySelectorAll<HTMLElement>(".ctx-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        lctx.classList.add("hidden");
+        const act = item.dataset.act!;
+        if (act === "new-group") void this.ctxNewGroup();
+        else if (act === "new-site") this.openAccountManager(true);
+      });
+    });
+    const lv = el.querySelector<HTMLElement>("#rs-list-view")!;
+    lv.addEventListener("contextmenu", (e) => {
+      if ((e.target as HTMLElement).closest(".rs-item, .rs-group")) return;
+      if (e.button === 0 && (e.ctrlKey || e.detail > 0)) { e.preventDefault(); return; }
+      e.preventDefault();
+      const lActs: Record<string, string> = { "new-group": t("新建分组…"), "new-site": t("新建连接") };
+      lctx.querySelectorAll<HTMLElement>(".ctx-item").forEach((it) => {
+        const a = it.dataset.act;
+        if (a && lActs[a]) it.textContent = lActs[a];
+      });
+      lctx.style.left = `${e.clientX}px`;
+      lctx.style.top = `${e.clientY}px`;
+      lctx.classList.remove("hidden");
+    });
+    el.addEventListener("click", (e) => {
+      if (!lctx.contains(e.target as Node)) lctx.classList.add("hidden");
+    });
     const items = el.querySelector<HTMLElement>("#rs-items")!;
     items.addEventListener("click", (e) => {
       const row = (e.target as HTMLElement).closest<HTMLElement>(".rs-item");
@@ -374,11 +429,20 @@ export class RemoteBrowser {
     const ctx = this.el.querySelector<HTMLElement>("#ftp-ctx")!;
     const treeEl = el.querySelector<HTMLElement>("#ftp-tree")!;
     treeEl.addEventListener("contextmenu", (e: MouseEvent) => {
+      // macOS 上 Ctrl+单击 会被系统当作右键触发 contextmenu（左键 + ctrlKey），
+      // 但 Ctrl+单击 的语义是加选，不应弹右键菜单。
+      // 拦截条件：左键触发（button=0）且带 Ctrl（macOS Ctrl+单击）或非常规键盘触发（detail>0，即物理点击）。
+      // 真右键（button=2）与键盘 Shift+F10（button=0/ctrlKey=false/detail=0）不受影响。
+      if (e.button === 0 && (e.ctrlKey || e.detail > 0)) {
+        e.preventDefault();
+        return;
+      }
       const node = (e.target as HTMLElement).closest<HTMLElement>("[data-name], .ft-arc");
       if (!node) {
         e.preventDefault();
         this.selectedPath = null;
         this.ctxNode = null;
+        this.clearRemoteMulti();
         const pPaste = pctx.querySelector('[data-act="paste"]') as HTMLElement;
         if (pPaste) this.applyPasteState(pPaste);
         pctx.style.left = `${e.clientX}px`;
@@ -405,6 +469,15 @@ export class RemoteBrowser {
       this.ctxArcNode = null;
       this.ctxNode = node;
       this.selectedPath = node.dataset.path || node.dataset.name!;
+      // 右键多选语义：右键节点已在多选中则保持多选，否则单选该节点（集合内为完整路径）
+      const nodeKey = this.remotePathOf(node);
+      if (!this.cur || !this.cur.selectedPaths.has(nodeKey) || this.cur.selectedPaths.size <= 1) {
+        this.cur?.selectedPaths.clear();
+        this.cur?.selectedPaths.add(nodeKey);
+        this.cur && (this.cur.selectAnchor = nodeKey);
+        this.selectedNode = node;
+        this.syncRemoteSelected();
+      }
       (ctx.querySelector('[data-act="saveas"]') as HTMLElement).style.display = "";
       (ctx.querySelector('[data-act="open"]') as HTMLElement).style.display = this.ctxIsDir ? "none" : "";
       (ctx.querySelector('[data-act="openwith"]') as HTMLElement).style.display = this.ctxIsDir ? "none" : "";
@@ -422,6 +495,12 @@ export class RemoteBrowser {
         const arc = it.dataset.arc === "1";
         it.classList.toggle("hidden", arc);
       });
+      // 多选时：单节点操作置灰，批量操作（复制/粘贴/删除/下载）保持可用
+      const multi = (this.cur?.selectedPaths.size ?? 0) > 1;
+      for (const a of ["open", "openwith", "rename", "copypath", "term-here", "extract", "extract-here", "extract-named"]) {
+        const it = ctx.querySelector(`[data-act="${a}"]`) as HTMLElement | null;
+        if (it) it.classList.toggle("ctx-disabled", multi);
+      }
       const pasteIt = ctx.querySelector('[data-act="paste"]') as HTMLElement;
       if (pasteIt) this.applyPasteState(pasteIt);
       ctx.style.left = `${e.clientX}px`;
@@ -440,6 +519,9 @@ export class RemoteBrowser {
           return;
         }
         if (!this.selectedPath) return;
+        const paths = this.effectiveRemotePaths();
+        if (!paths.length) return;
+        if (["open", "openwith", "rename", "copypath", "term-here", "extract", "extract-here", "extract-named"].includes(act) && paths.length > 1) return;
         if (act === "open") {
           // 归档文件进入视图（与双击一致）；普通文件下载打开
           const node = this.ctxNode;
@@ -448,15 +530,19 @@ export class RemoteBrowser {
         }
         else if (act === "openwith") void this.openWithDefault(this.selectedPath);
         else if (act === "saveas") {
-          if (this.ctxIsDir) void this.downloadDir(this.selectedPath);
-          else this.saveAs(this.selectedPath);
+          // 多选：按右键节点类型逐个处理（目录递归下载/文件另存）；FTP 传裸名
+          for (const p of paths) {
+            const arg = this.isSftp() ? p : (p.split("/").filter(Boolean).pop() || p);
+            if (this.ctxIsDir) void this.downloadDir(arg);
+            else this.saveAs(arg);
+          }
         }
         else if (act === "term-here") this.openTerminalHere(this.selectedPath);
         else if (act === "extract" || act === "extract-here" || act === "extract-named") void this.extractRemoteArchive(this.selectedPath, act);
         else if (act === "rename") this.doRename();
-        else if (act === "copy") void this.setClipboard(this.selectedPath);
+        else if (act === "copy") void this.setClipboardPaths(paths);
         else if (act === "copypath") void this.copyPath(this.selectedPath);
-        else if (act === "del") this.delPath(this.selectedPath);
+        else if (act === "del") this.delPaths(paths);
       });
     });
     document.addEventListener("click", (e) => {
@@ -470,8 +556,14 @@ export class RemoteBrowser {
       if (!node) return;
       const isArrow = (e.target as HTMLElement).classList.contains("ft-arrow");
       const name = node.dataset.name!;
-      // Finder：单击任意处（含箭头）选中；仅箭头触发展开动作
-      this.selectNode(node);
+      // Finder：单击任意处（含箭头）选中；仅箭头触发展开动作；⌘/Ctrl+单击 加选，Shift+单击 范围选
+      // 加选不弹右键菜单：即使系统已触发 contextmenu，也在同一次交互的 click 阶段立即关闭
+      if (e.metaKey || e.ctrlKey) {
+        const m = this.el.querySelector("#ftp-ctx");
+        if (m) m.classList.add("hidden");
+      }
+      if (e.shiftKey) this.selectRemoteRange(node);
+      else this.selectNode(node, e.metaKey || e.ctrlKey);
       if (node.dataset.actions === "up") return;
       const isDir = node.dataset.dir === "1";
       if (isDir) {
@@ -728,29 +820,81 @@ export class RemoteBrowser {
     }
   }
 
+  // 分组折叠状态（localStorage 记忆）
+  private collapsedGroups(): Set<string> {
+    try {
+      return new Set(JSON.parse(localStorage.getItem("uec.remote.groups.collapsed") || "[]"));
+    } catch { return new Set(); }
+  }
+
+  private toggleGroup(group: string) {
+    const cur = this.collapsedGroups();
+    if (cur.has(group)) cur.delete(group); else cur.add(group);
+    localStorage.setItem("uec.remote.groups.collapsed", JSON.stringify([...cur]));
+    this.renderSites();
+  }
+
   private renderSites() {
     const list = this.el.querySelector<HTMLElement>("#rs-items");
     if (!list) return;
     const q = (this.el.querySelector<HTMLInputElement>("#rs-filter")?.value || "").toLowerCase();
     const vis = this.sites.filter(
-      (s) => !q || `${s.name} ${s.host} ${s.username}`.toLowerCase().includes(q),
+      (s) => !q || `${s.name} ${s.host} ${s.username} ${s.group}`.toLowerCase().includes(q),
     );
     list.innerHTML = "";
     this.el.querySelector<HTMLElement>("#rs-empty")!.classList.toggle("hidden", vis.length > 0);
-    for (const s of vis) {
-      const row = document.createElement("div");
-      const isConn = this.sessions.has(s.id);
-      const isActive = s.id === this.connectedSiteId;
-      row.className = "rs-item"
+    // secureCRT 风格文件夹树：group 按 "/" 分层（"生产/华东" = 二级），文件夹在前、服务器在后，同层按名排序
+    interface GNode { name: string; path: string; children: Map<string, GNode>; sites: RemoteSite[]; }
+    const root: GNode = { name: "", path: "", children: new Map(), sites: [] };
+    for (const sv of vis) {
+      const segs = sv.group.split("/").map((x) => x.trim()).filter(Boolean);
+      let cur = root;
+      let acc = "";
+      for (const seg of segs) {
+        acc = acc ? acc + "/" + seg : seg;
+        if (!cur.children.has(seg)) cur.children.set(seg, { name: seg, path: acc, children: new Map(), sites: [] });
+        cur = cur.children.get(seg)!;
+      }
+      cur.sites.push(sv);
+    }
+    // 合并独立分组清单（空分组预建）
+    for (const g of this.groupList()) {
+      const segs = g.split("/").map((x) => x.trim()).filter(Boolean);
+      let cur = root;
+      let acc = "";
+      for (const seg of segs) {
+        acc = acc ? acc + "/" + seg : seg;
+        if (!cur.children.has(seg)) cur.children.set(seg, { name: seg, path: acc, children: new Map(), sites: [] });
+        cur = cur.children.get(seg)!;
+      }
+    }
+    const sortN = (a: GNode, b: GNode) => a.name.localeCompare(b.name, "zh-Hans-CN");
+    const sortS = (a: RemoteSite, b: RemoteSite) => a.name.localeCompare(b.name, "zh-Hans-CN");
+    const collapsed = this.collapsedGroups();
+    const subCount = (n: GNode): number => {
+      let c = n.sites.length;
+      for (const ch of n.children.values()) c += subCount(ch);
+      return c;
+    };
+    const row = (sv: RemoteSite, depth: number) => {
+      const rowEl = document.createElement("div");
+      const isConn = this.sessions.has(sv.id);
+      const isActive = sv.id === this.connectedSiteId;
+      rowEl.className = "rs-item"
         + (isConn ? " rs-connected" : "")
         + (isActive ? " rs-active" : "");
-      row.dataset.id = s.id;
-      const ico = s.proto === "ftp" ? "📁" : s.proto === "ftps" ? "🔒" : "🔗";
-      row.innerHTML = `
+      rowEl.dataset.id = sv.id;
+      rowEl.dataset.group = sv.group;
+      const ico = sv.proto === "ftp"
+        ? `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" fill="#f0b429"/></svg>`
+        : sv.proto === "ftps"
+          ? `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z" fill="#7db4ff"/></svg>`
+          : `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z" fill="#7db4ff"/></svg>`;
+      rowEl.innerHTML = `
         <span class="rs-item-ico">${ico}</span>
         <span class="rs-item-main">
-          <span class="rs-item-name">${escapeHtml(s.name)}${isConn ? `<span class="rs-item-dot${isActive ? " active" : ""}" title="${isActive ? t("当前会话") : t("已连接")}">●</span>` : ""}</span>
-          <span class="rs-item-sub">${s.proto.toUpperCase()} · ${escapeHtml(s.host)}:${s.port} · ${escapeHtml(s.username || "—")}</span>
+          <span class="rs-item-name">${escapeHtml(sv.name)}${isConn ? `<span class="rs-item-dot${isActive ? " active" : ""}" title="${isActive ? t("当前会话") : t("已连接")}">●</span>` : ""}</span>
+          <span class="rs-item-sub">${sv.proto.toUpperCase()} · ${escapeHtml(sv.host)}:${sv.port} · ${escapeHtml(sv.username || "—")}</span>
         </span>
         <span class="rs-item-ops">
           <button class="search-btn rs-op" data-op="connect">${t("连接")}</button>
@@ -758,8 +902,250 @@ export class RemoteBrowser {
           <button class="search-btn rs-op" data-op="edit" title="${t("编辑")}">✎</button>
           <button class="search-btn rs-op" data-op="del" title="${t("删除")}">🗑</button>
         </span>`;
-      list.appendChild(row);
+      rowEl.style.paddingLeft = `${16 + depth * 14}px`;
+      // WKWebView 不支持 HTML5 DnD，用鼠标事件模拟拖拽（跨平台可靠）
+      rowEl.addEventListener("mousedown", (e) => {
+        if (e.button !== 0 || (e.target as HTMLElement).closest(".rs-item-ops, .rs-item-ico")) return;
+        const sx = e.clientX, sy = e.clientY;
+        const arm = (ev: MouseEvent) => {
+          if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 5) return; // 未达阈值：保留监听继续等
+          document.removeEventListener("mousemove", arm);
+          const id = sv.id;
+          rowEl.classList.add("rs-dragging");
+          const blockSel = (se: Event) => se.preventDefault(); // 拖拽中禁止文本选择
+          document.addEventListener("selectstart", blockSel);
+          // 跟随鼠标的拖拽浮层
+          const ghost = document.createElement("div");
+          ghost.className = "rs-drag-ghost";
+          ghost.innerHTML = `<span class="rs-drag-ghost-ico"></span><span>${escapeHtml(sv.name)}</span>`;
+          document.body.appendChild(ghost);
+          let target: HTMLElement | null = null;
+          const track = (ev: MouseEvent) => {
+            ghost.style.left = `${ev.clientX + 14}px`;
+            ghost.style.top = `${ev.clientY + 10}px`;
+            const el = document.elementFromPoint(ev.clientX, ev.clientY);
+            const grp = el?.closest<HTMLElement>(".rs-group") ?? null;
+            if (grp !== target) {
+              if (target) target.classList.remove("rs-drop-hover");
+              target = grp;
+              if (target) target.classList.add("rs-drop-hover");
+            }
+          };
+          const up = (ev: MouseEvent) => {
+            document.removeEventListener("mousemove", track);
+            document.removeEventListener("mouseup", up);
+            document.removeEventListener("selectstart", blockSel);
+            ghost.remove();
+            rowEl.classList.remove("rs-dragging");
+            const el = document.elementFromPoint(ev.clientX, ev.clientY);
+            const grp = el?.closest<HTMLElement>(".rs-group") ?? null;
+            if (target) target.classList.remove("rs-drop-hover");
+            if (grp && id) this.moveSiteToGroup(id, grp.dataset.group ?? "");
+          };
+          document.addEventListener("mousemove", track);
+          document.addEventListener("mouseup", up);
+        };
+        document.addEventListener("mousemove", arm);
+        document.addEventListener("mouseup", () => document.removeEventListener("mousemove", arm), { once: true });
+      });
+      return rowEl;
+    };
+    // 折叠/展开箭头：collapsed=▶（向右，点击展开），expanded=▼（向下，点击收起）
+    const arrowIcon = (expanded: boolean) => {
+      const fill = "#f0b429";
+      const path = expanded
+        ? "M16.59 8.59 12 13.17 7.41 8.59 6 10l6 6 6-6z"
+        : "M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z";
+      return `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="${path}" fill="${fill}"/></svg>`;
+    };
+    const groupHead = (n: GNode, depth: number) => {
+      const isCollapsed = collapsed.has(n.path);
+      const head = document.createElement("div");
+      head.className = "rs-group" + (isCollapsed ? " collapsed" : "");
+      head.dataset.group = n.path;
+      head.style.paddingLeft = `${10 + depth * 14}px`;
+      head.innerHTML = `<span class="rs-group-arrow">${arrowIcon(!isCollapsed)}</span><span class="rs-group-name">${escapeHtml(n.name)}</span><span class="rs-group-count">${subCount(n)}</span>`;
+      head.addEventListener("click", (e) => {
+        if ((e.target as HTMLElement).closest(".rs-item-ops")) return;
+        this.toggleGroup(n.path);
+      });
+      head.addEventListener("dragover", (e) => { e.preventDefault(); head.classList.add("rs-drop-hover"); });
+      head.addEventListener("dragleave", () => head.classList.remove("rs-drop-hover"));
+      head.addEventListener("drop", (e) => {
+        e.preventDefault();
+        head.classList.remove("rs-drop-hover");
+        const id = e.dataTransfer?.getData("text/x-uec-site");
+        if (id) this.moveSiteToGroup(id, n.path);
+      });
+      head.addEventListener("contextmenu", (e) => this.onGroupCtx(e, n));
+      return head;
+    };
+    const walk = (n: GNode, depth: number) => {
+      if (n === root) {
+        // root.sites（未分组服务器）不在此渲染，统一由下方未分组区渲染一次，避免重复
+        for (const ch of [...n.children.values()].sort(sortN)) walk(ch, 0);
+        return;
+      }
+      list.appendChild(groupHead(n, depth));
+      if (collapsed.has(n.path)) return;
+      for (const ch of [...n.children.values()].sort(sortN)) walk(ch, depth + 1);
+      for (const sv of [...n.sites].sort(sortS)) list.appendChild(row(sv, depth + 1));
+    };
+    walk(root, 0);
+    // 未分组区（拖拽目标：拖进来即移出分组）
+    const ungrouped = vis.filter((sv) => !sv.group);
+    // 搜索时仅在有未分组服务器时显示未分组头（避免空头误现）；无搜索时显示作拖拽目标
+    if (ungrouped.length || (root.children.size > 0 && !q)) {
+      const head = document.createElement("div");
+      head.className = "rs-group rs-group-ungrouped" + (root.children.size ? " rs-drop-zone" : "");
+      head.innerHTML = `<span class="rs-group-arrow">${arrowIcon(true)}</span><span class="rs-group-name">${t("未分组")}</span><span class="rs-group-count">${ungrouped.length}</span>`;
+      head.addEventListener("dragover", (e) => { e.preventDefault(); head.classList.add("rs-drop-hover"); });
+      head.addEventListener("dragleave", () => head.classList.remove("rs-drop-hover"));
+      head.addEventListener("drop", (e) => {
+        e.preventDefault();
+        head.classList.remove("rs-drop-hover");
+        const id = e.dataTransfer?.getData("text/x-uec-site");
+        if (id) this.moveSiteToGroup(id, "");
+      });
+      list.appendChild(head);
+      for (const sv of [...ungrouped].sort(sortS)) list.appendChild(row(sv, 1));
     }
+  }
+
+  // 拖拽/移动服务器到指定分组路径（空串=未分组）
+  private moveSiteToGroup(id: string, group: string) {
+    const sv = this.sites.find((x) => x.id === id);
+    if (!sv) return;
+    if (sv.group === group) return;
+    sv.group = group;
+    this.saveSites();
+    this.renderSites();
+    this.status(t("已移动到分组 {g}", { g: group || t("未分组") }));
+  }
+
+  // 组标题右键菜单
+  private onGroupCtx(e: MouseEvent, n: { name: string; path: string }) {
+    if (e.button === 0 && (e.ctrlKey || e.detail > 0)) { e.preventDefault(); return; }
+    e.preventDefault();
+    e.stopPropagation();
+    const ctx = this.el.querySelector<HTMLElement>("#rs-group-ctx");
+    if (!ctx) return;
+    // 打开时按当前语言填充文案（模板为构造时生成，语言切换后需动态刷新）
+    const acts: Record<string, string> = {
+      "new-subgroup": t("新建子分组…"),
+      "rename-group": t("重命名分组"),
+      "del-group": t("删除分组"),
+      "collapse-all": t("折叠全部"),
+      "expand-all": t("展开全部"),
+    };
+    ctx.querySelectorAll<HTMLElement>(".ctx-item").forEach((it) => {
+      const a = it.dataset.act;
+      if (a && acts[a]) it.textContent = acts[a];
+    });
+    this.ctxGroup = n.path;
+    ctx.style.left = `${e.clientX}px`;
+    ctx.style.top = `${e.clientY}px`;
+    ctx.classList.remove("hidden");
+  }
+
+  private async groupAction(act: string) {
+    const g = this.ctxGroup;
+    if (!g) return;
+    this.ctxGroup = null;
+    const affected = this.sites.filter((sv) => sv.group === g || sv.group.startsWith(g + "/"));
+    if (act === "new-subgroup") {
+      const name = await this.promptText(t("新建子分组…"), t("子分组名（如 华东）"), "");
+      if (!name) return;
+      const segs = name.split("/").map((x) => x.trim()).filter(Boolean);
+      if (!segs.length) return;
+      const path = g + "/" + segs.join("/");
+      const list = this.groupList();
+      if (list.includes(path)) { this.status(t("分组已存在")); return; }
+      list.push(path);
+      this.saveGroupList(list);
+      this.renderSites();
+      return;
+    } else if (act === "rename-group") {
+      const last = g.split("/").pop() || g;
+      const name = await this.promptText(t("重命名分组"), t("新分组名"), last);
+      if (!name || !name.trim() || name.trim() === last) return;
+      const clean = name.trim();
+      const prefix = g.slice(0, g.length - last.length);
+      for (const sv of affected) {
+        sv.group = prefix + clean + (sv.group === g ? "" : sv.group.slice(g.length));
+      }
+      this.saveSites();
+      // 清单级联改名（含空分组）
+      const list = this.groupList();
+      let changed = false;
+      for (let i = 0; i < list.length; i++) {
+        if (list[i] === g) { list[i] = prefix + clean; changed = true; }
+        else if (list[i].startsWith(g + "/")) { list[i] = prefix + clean + list[i].slice(g.length); changed = true; }
+      }
+      if (changed) this.saveGroupList(list);
+      this.renderSites();
+    } else if (act === "del-group") {
+      if (!await this.confirm(t("删除分组 {g}？组内服务器将移到上一级，空分组将被移除。", { g }))) return;
+      for (const sv of affected) sv.group = sv.group === g ? "" : sv.group.slice(g.length + 1);
+      this.saveSites();
+      this.saveGroupList(this.groupList().filter((pp) => pp !== g && !pp.startsWith(g + "/")));
+      this.renderSites();
+    } else if (act === "collapse-all") {
+      this.collapseAll(true);
+    } else if (act === "expand-all") {
+      this.collapseAll(false);
+    }
+  }
+
+  private collapseAll(collapse: boolean) {
+    const all = new Set<string>();
+    for (const sv of this.sites) {
+      const segs = sv.group.split("/").filter(Boolean);
+      let acc = "";
+      for (const seg of segs) {
+        acc = acc ? acc + "/" + seg : seg;
+        all.add(acc);
+      }
+    }
+    for (const g of this.groupList()) {
+      const segs = g.split("/").filter(Boolean);
+      let acc = "";
+      for (const seg of segs) {
+        acc = acc ? acc + "/" + seg : seg;
+        all.add(acc);
+      }
+    }
+    const cur = this.collapsedGroups();
+    if (collapse) { for (const pp of all) cur.add(pp); }
+    else { for (const pp of all) cur.delete(pp); }
+    localStorage.setItem("uec.remote.groups.collapsed", JSON.stringify([...cur]));
+    this.renderSites();
+  }
+
+  // 独立分组清单（空分组预建，localStorage 持久化）
+  private groupList(): string[] {
+    try {
+      const v = JSON.parse(localStorage.getItem("uec.remote.groups.list") || "[]");
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    } catch { return []; }
+  }
+
+  private saveGroupList(list: string[]) {
+    localStorage.setItem("uec.remote.groups.list", JSON.stringify([...new Set(list)]));
+  }
+
+  // 列表空白右键：新建分组（支持嵌套路径，可建空文件夹）
+  private async ctxNewGroup() {
+    const name = await this.promptText(t("新建分组…"), t("分组路径（如 研发/算法）"), "");
+    if (!name) return;
+    const segs = name.split("/").map((x) => x.trim()).filter(Boolean);
+    if (!segs.length) return;
+    const path = segs.join("/");
+    const list = this.groupList();
+    if (list.includes(path)) { this.status(t("分组已存在")); return; }
+    list.push(path);
+    this.saveGroupList(list);
+    this.renderSites();
   }
 
   // 复制服务器：基于原配置生成新条目（新 id，名称带副本后缀）
@@ -801,12 +1187,9 @@ export class RemoteBrowser {
     if (tgt && (tgt.closest(".cm-editor") || tgt.closest(".xterm") || tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable)) return;
     const k = e.key.toLowerCase();
     if (k === "c") {
-      const sel = this.selectedNode;
-      if (!sel || sel.dataset.actions === "up" || !this.id) return;
-      const full = sel.dataset.path || sel.dataset.name;
-      if (!full) return;
+      if (!this.cur || !this.cur.selectedPaths.size || !this.id) return;
       e.preventDefault();
-      this.setClipboard(this.isSftp() ? full : join(this.path, full));
+      this.setClipboardPaths([...this.cur.selectedPaths]);
     } else if (k === "v") {
       if (!this.clipboard) return;
       e.preventDefault();
@@ -823,16 +1206,16 @@ export class RemoteBrowser {
     }
   }
 
-  // 剪贴板式复制：记住远程源路径（同协议粘贴）
-  private setClipboard(full: string) {
-    // FTP 树节点路径是相对服务器 cwd 的名字，统一转完整路径（后端按绝对路径复制）
-    const src = this.isSftp() ? full : join(this.path, full);
-    const name = src.split("/").filter(Boolean).pop() || src;
-    this.clipboard = { src, name };
+  private setClipboardPaths(paths: string[]) {
+    if (!paths.length) return;
+    // paths 已是完整路径（effectiveRemotePaths 产出），无需再 join
+    const srcs = [...paths];
+    const name = srcs.length > 1 ? t("选中 {n} 项", { n: srcs.length }) : (srcs[0].split("/").filter(Boolean).pop() || srcs[0]);
+    this.clipboard = { srcs, name };
     this.status(t("已复制 {name}，在目标目录右键粘贴", { name }));
   }
 
-  // 粘贴到当前浏览目录（this.path）；同名自动加序号；目录贴进自身子目录会被后端拦截
+  // 粘贴到当前浏览目录（this.path）；同名自动加序号；目录贴进自身子目录会被后端拦截；多选逐项
   private async pasteClipboard() {
     const cb = this.clipboard;
     if (!cb) {
@@ -841,12 +1224,14 @@ export class RemoteBrowser {
     }
     if (!this.id || !this.path) return;
     try {
-      const dest = await invoke<string>(this.isSftp() ? "sftp_copy" : "ftp_copy", {
-        id: this.id,
-        src: cb.src,
-        destDir: this.path,
-      });
-      this.status(t("已粘贴到 {dest}", { dest }));
+      for (const src of cb.srcs) {
+        await invoke<string>(this.isSftp() ? "sftp_copy" : "ftp_copy", {
+          id: this.id,
+          src,
+          destDir: this.path,
+        });
+      }
+      this.status(t("已粘贴到 {dest}", { dest: this.path }));
       void this.refresh();
     } catch (e) {
       this.showError(t("粘贴失败"), String(e));
@@ -865,6 +1250,8 @@ export class RemoteBrowser {
         expanded: new Set(),
         loading: new Set(),
         selectedPath: null,
+        selectedPaths: new Set<string>(),
+        selectAnchor: null,
         ctxIsDir: false,
         selNode: null,
         arcView: null,
@@ -1027,6 +1414,12 @@ export class RemoteBrowser {
             </div>
             <div class="acct-tabpanel" data-tab="general">
               <label class="acct-f">${t("账户名称")}<input id="acct-name" class="fs-input"/></label>
+              <label class="acct-f">${t("分组（可选）")}
+                <span class="acct-group-wrap">
+                  <input id="acct-group" class="fs-input" placeholder="${t("未分组")}" autocomplete="off"/>
+                  <div id="acct-group-pick" class="acct-group-pick hidden"></div>
+                </span>
+              </label>
               <div class="acct-f-row">
                 <label class="acct-f" style="flex:1">${t("协议")}
                   <select id="acct-proto" class="fs-input">
@@ -1139,6 +1532,7 @@ export class RemoteBrowser {
       qInp("#acct-keypass").disabled = disabled;
       if (!s) return;
       qInp("#acct-name").value = s.name;
+      qInp("#acct-group").value = s.group || "";
       qSel("#acct-proto").value = s.proto;
       qInp("#acct-port").value = String(s.port);
       qInp("#acct-host").value = s.host;
@@ -1161,6 +1555,7 @@ export class RemoteBrowser {
       const s = draft.find((x) => x.id === selId);
       if (!s) return;
       s.name = qInp("#acct-name").value.trim() || "未命名账户";
+      s.group = qInp("#acct-group").value.trim();
       s.proto = qSel("#acct-proto").value as RemoteSite["proto"];
       const portRaw = qInp("#acct-port").value.trim();
       s.port = parseInt(portRaw || String(defaultPort(s.proto)), 10) || defaultPort(s.proto);
@@ -1186,6 +1581,55 @@ export class RemoteBrowser {
     };
 
     const close = () => mask.remove();
+
+    // 分组自定义下拉：已用分组 + 独立清单（空分组），点击回填
+    const groupInput = qInp("#acct-group");
+    const groupPick = q("#acct-group-pick") as HTMLElement;
+    const buildGroupPick = () => {
+      const list = [...new Set([
+        ...this.sites.map((x) => x.group).filter(Boolean),
+        ...this.groupList(),
+      ])].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+      groupPick.innerHTML = "";
+      if (!list.length) {
+        const d = document.createElement("div");
+        d.className = "acct-group-pick-empty";
+        d.textContent = t("暂无分组，可直接输入新路径");
+        groupPick.appendChild(d);
+        return;
+      }
+      for (const g of list) {
+        const item = document.createElement("div");
+        item.className = "acct-group-pick-item";
+        item.textContent = g;
+        item.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          groupInput.value = g;
+          groupPick.classList.add("hidden");
+        });
+        groupPick.appendChild(item);
+      }
+    };
+    let pickTimer: ReturnType<typeof setTimeout> | undefined;
+    groupInput.addEventListener("focus", () => {
+      clearTimeout(pickTimer);
+      buildGroupPick();
+      groupPick.classList.remove("hidden");
+    });
+    groupInput.addEventListener("input", () => {
+      buildGroupPick();
+      groupPick.classList.remove("hidden");
+    });
+    groupInput.addEventListener("blur", () => {
+      pickTimer = setTimeout(() => groupPick.classList.add("hidden"), 150);
+    });
+    // 点击下拉外部（含账户列表切换）立即关闭；点击下拉项由 mousedown preventDefault 保持
+    mask.addEventListener("mousedown", (e) => {
+      if (!groupPick.contains(e.target as Node) && e.target !== groupInput) {
+        clearTimeout(pickTimer);
+        groupPick.classList.add("hidden");
+      }
+    });
 
     // tabs
     mask.querySelectorAll<HTMLElement>(".acct-tab-btn").forEach((btn) => {
@@ -1610,11 +2054,85 @@ export class RemoteBrowser {
     void this.refresh();
   }
 
-  // Finder 选中：单击名称仅高亮（唯一选中）
-  private selectNode(node: HTMLElement) {
-    if (this.selectedNode && this.selectedNode !== node) this.selectedNode.classList.remove("ft-selected");
+  // Finder 选中：单击名称仅高亮；additive=true 时 ⌘/Ctrl+单击 加选/减选
+  private selectNode(node: HTMLElement, additive = false) {
+    if (!this.cur) return;
+    if (!additive) {
+      this.cur.selectedPaths.clear();
+      this.cur.selectedPaths.add(this.remotePathOf(node));
+      this.cur.selectAnchor = node.dataset.path || node.dataset.name || null;
+    } else {
+      const key = this.remotePathOf(node);
+      if (this.cur.selectedPaths.has(key)) {
+        this.cur.selectedPaths.delete(key);
+        this.selectedPath = null;
+      } else {
+        this.cur.selectedPaths.add(key);
+        this.cur.selectAnchor = key;
+      }
+    }
+    this.selectedPath = node.dataset.path || node.dataset.name || null;
     this.selectedNode = node;
-    node.classList.add("ft-selected");
+    this.syncRemoteSelected();
+  }
+
+  // 节点 → 完整远程路径（SFTP 绝对路径 / FTP join 当前 cwd）
+  private remotePathOf(node: HTMLElement): string {
+    const full = node.dataset.path || node.dataset.name!;
+    return this.isSftp() ? full : join(this.path, full);
+  }
+
+  private clearRemoteMulti() {
+    if (!this.cur) return;
+    if (!this.cur.selectedPaths.size && !this.selectedPath) return;
+    this.cur.selectedPaths.clear();
+    this.cur.selectAnchor = null;
+    this.selectedPath = null;
+    this.syncRemoteSelected();
+  }
+
+  private syncRemoteSelected() {
+    if (!this.cur) return;
+    const treeEl = this.el.querySelector<HTMLElement>("#ftp-tree");
+    treeEl?.querySelectorAll<HTMLElement>("[data-name]").forEach((n) => {
+      n.classList.toggle("ft-selected", this.cur!.selectedPaths.has(this.remotePathOf(n)));
+    });
+  }
+
+  /** 右键生效路径列表：右键节点在多选中则取多选，否则取右键节点（完整路径） */
+  private effectiveRemotePaths(): string[] {
+    if (!this.cur || !this.ctxNode) return [];
+    const nodeKey = this.remotePathOf(this.ctxNode);
+    if (this.cur.selectedPaths.size > 1 && this.cur.selectedPaths.has(nodeKey)) {
+      return [...this.cur.selectedPaths];
+    }
+    return [nodeKey];
+  }
+
+  // Shift+单击 范围选（按树内可见顺序）
+  private selectRemoteRange(target: HTMLElement) {
+    if (!this.cur) return;
+    const treeEl = this.el.querySelector<HTMLElement>("#ftp-tree");
+    if (!treeEl) return;
+    const nodes = [...treeEl.querySelectorAll<HTMLElement>("[data-name]")].filter(
+      (n) => n.dataset.actions !== "up" && (n.dataset.path || n.dataset.name),
+    );
+    const tIdx = nodes.indexOf(target);
+    if (tIdx < 0) return;
+    const aIdx = nodes.findIndex((n) => this.cur!.selectAnchor === (n.dataset.path || n.dataset.name) || this.cur!.selectAnchor === this.remotePathOf(n));
+    if (aIdx < 0) {
+      this.selectNode(target, false);
+      return;
+    }
+    const [lo, hi] = aIdx <= tIdx ? [aIdx, tIdx] : [tIdx, aIdx];
+    this.cur.selectedPaths.clear();
+    this.selectedPath = target.dataset.path || target.dataset.name || null;
+    this.selectedNode = target;
+    for (let i = lo; i <= hi; i++) {
+      this.cur.selectedPaths.add(this.remotePathOf(nodes[i]));
+    }
+    this.cur.selectAnchor = target.dataset.path || target.dataset.name || null;
+    this.syncRemoteSelected();
   }
 
   // 路径栏：SFTP 可点击面包屑；FTP 只读；归档视图为虚拟面包屑
@@ -2081,19 +2599,26 @@ export class RemoteBrowser {
     }
   }
 
-  private async delPath(full: string) {
-    if (!this.id) return;
-    const name = full.split("/").pop() || full;
-    if (!await this.confirm(`确定删除 ${name} 吗？`)) return;
-    this.status(t("删除 {name}…", { name }));
+  // 多选删除：确认 N 项后逐个删（单节点同样走此路径）
+  private async delPaths(paths: string[]) {
+    if (!paths.length || !this.id) return;
+    const multi = paths.length > 1;
+    const name = multi ? t("选中 {n} 项", { n: paths.length }) : (paths[0].split("/").filter(Boolean).pop() || paths[0]);
+    const yes = await this.confirm(multi ? t("确定删除选中的 {n} 项？", { n: paths.length }) : `确定删除 ${name} 吗？`);
+    if (!yes) return;
+    this.status(multi ? t("删除 {n} 项…", { n: paths.length }) : t("删除 {name}…", { name }));
     try {
-      if (this.isSftp()) {
-        await invoke("sftp_delete", { id: this.id, path: full, isDir: this.ctxIsDir });
-      } else {
-        await invoke("ftp_delete", { id: this.id, name, isDir: this.ctxIsDir });
+      for (const p of paths) {
+        const nm = p.split("/").filter(Boolean).pop() || p;
+        if (this.isSftp()) {
+          await invoke("sftp_delete", { id: this.id, path: p, isDir: this.ctxIsDir });
+        } else {
+          await invoke("ftp_delete", { id: this.id, name: nm, isDir: this.ctxIsDir });
+        }
+        this.expanded.delete(p);
       }
-      this.expanded.delete(full);
-      this.status(t("已删除"));
+      this.clearRemoteMulti();
+      this.status(multi ? t("已删除 {n} 项", { n: paths.length }) : t("已删除"));
       await this.refresh();
     } catch (e) {
       this.status(t("删除失败: {e}", { e: String(e) }));

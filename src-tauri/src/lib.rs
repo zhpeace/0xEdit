@@ -1924,9 +1924,9 @@ fn archive_update(path: String, entry_name: String, new_content: String) -> Resu
 // 目标已存在自动加序号（a.zip → a (2).zip），zip 条目统一使用 / 分隔符；
 // 通过 uec-transfer 事件实时上报进度（右下角传输浮条），进度按已写字节计
 #[tauri::command]
-async fn create_archive(app: tauri::AppHandle, dir: String, name: String, items: Vec<String>) -> Result<String, String> {
+async fn create_archive(app: tauri::AppHandle, dir: String, name: String, items: Vec<String>, format: String) -> Result<String, String> {
     // 压缩是重活：放后台线程执行，避免同步命令占用主线程冻结界面（Tauri 2 同步命令跑在主线程）
-    tauri::async_runtime::spawn_blocking(move || create_archive_impl(Some(&app), &dir, &name, &items))
+    tauri::async_runtime::spawn_blocking(move || create_archive_impl(Some(&app), &dir, &name, &items, &format))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1936,17 +1936,47 @@ fn create_archive_impl(
     dir: &str,
     name: &str,
     items: &[String],
+    format: &str,
 ) -> Result<String, String> {
     use std::io::Write;
     if items.is_empty() {
         return Err("请选择要压缩的文件或文件夹".to_string());
     }
-    let base_name = if name.to_lowercase().ends_with(".zip") {
+    let is_tgz = format.eq_ignore_ascii_case("tar.gz") || format.eq_ignore_ascii_case("tgz");
+    let base_name = if is_tgz {
+        let lower = name.to_lowercase();
+        if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
+            name.to_string()
+        } else {
+            format!("{name}.tar.gz")
+        }
+    } else if name.to_lowercase().ends_with(".zip") {
         name.to_string()
     } else {
         format!("{name}.zip")
     };
-    let target = unique_dest(&std::path::Path::new(dir).join(&base_name));
+    // tar.gz 双扩展名：序号须为 a (2).tar.gz（split_name 对双扩展名拆成 a.tar (2).gz，需独立处理）
+    let target = if is_tgz {
+        let cand = std::path::Path::new(dir).join(&base_name);
+        if !cand.exists() {
+            cand
+        } else {
+            let stem = base_name
+                .trim_end_matches(".tar.gz")
+                .trim_end_matches(".tgz");
+            let mut next = None;
+            for i in 2.. {
+                let c = std::path::Path::new(dir).join(format!("{stem} ({i}).tar.gz"));
+                if !c.exists() {
+                    next = Some(c);
+                    break;
+                }
+            }
+            next.unwrap_or_else(|| cand)
+        }
+    } else {
+        unique_dest(&std::path::Path::new(dir).join(&base_name))
+    };
     let task_id = format!(
         "zip-{}",
         std::time::SystemTime::now()
@@ -1995,30 +2025,69 @@ fn create_archive_impl(
         }
     }
     if let Some(app) = app {
-        emit_transfer(app, &task_id, "zip", &base_name, 0, total, "progress", None);
+        emit_transfer(app, &task_id, if is_tgz { "tgz" } else { "zip" }, &base_name, 0, total, "progress", None);
     }
-    let out_file = std::fs::File::create(&target).map_err(|e| format!("创建压缩文件: {e}"))?;
-    let mut zw = zip::ZipWriter::new(out_file);
-    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let mut done: u64 = 0;
-    for e in &entries {
-        if e.is_dir {
-            zw.add_directory(&e.zip_name, opts).map_err(|err| err.to_string())?;
-        } else {
-            zw.start_file(&e.zip_name, opts).map_err(|err| err.to_string())?;
-            if let Some(src) = &e.src {
-                let mut f = std::fs::File::open(src).map_err(|err| format!("打开文件: {err}"))?;
-                std::io::copy(&mut f, &mut zw).map_err(|err| err.to_string())?;
-            }
-            done += e.size;
-            if let Some(app) = app {
-                emit_transfer(app, &task_id, "zip", &base_name, done, total, "progress", None);
+    if is_tgz {
+        // tar.gz：tar Builder + gzip 编码器串联写入
+        use std::io::Write as _;
+        let file = std::fs::File::create(&target).map_err(|e| format!("创建压缩文件: {e}"))?;
+        let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(enc);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0) as u64;
+        for e in &entries {
+            let mut header = tar::Header::new_gnu();
+            if e.is_dir {
+                header.set_entry_type(tar::EntryType::Directory);
+                header.set_size(0);
+                header.set_mode(0o755);
+                header.set_mtime(now);
+                builder.append_data(&mut header, &e.zip_name, std::io::empty()).map_err(|err| err.to_string())?;
+            } else {
+                header.set_size(e.size);
+                header.set_mode(0o644);
+                header.set_mtime(now);
+                if let Some(src) = &e.src {
+                    let f = std::fs::File::open(src).map_err(|err| format!("打开文件: {err}"))?;
+                    builder.append_data(&mut header, &e.zip_name, f).map_err(|err| err.to_string())?;
+                } else {
+                    builder.append_data(&mut header, &e.zip_name, std::io::empty()).map_err(|err| err.to_string())?;
+                }
+                done += e.size;
+                if let Some(app) = app {
+                    emit_transfer(app, &task_id, "tgz", &base_name, done, total, "progress", None);
+                }
             }
         }
+        builder.finish().map_err(|e| e.to_string())?;
+        let mut enc = builder.into_inner().map_err(|e| e.to_string())?;
+        enc.finish().map_err(|e| e.to_string())?;
+    } else {
+        let out_file = std::fs::File::create(&target).map_err(|e| format!("创建压缩文件: {e}"))?;
+        let mut zw = zip::ZipWriter::new(out_file);
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for e in &entries {
+            if e.is_dir {
+                zw.add_directory(&e.zip_name, opts).map_err(|err| err.to_string())?;
+            } else {
+                zw.start_file(&e.zip_name, opts).map_err(|err| err.to_string())?;
+                if let Some(src) = &e.src {
+                    let mut f = std::fs::File::open(src).map_err(|err| format!("打开文件: {err}"))?;
+                    std::io::copy(&mut f, &mut zw).map_err(|err| err.to_string())?;
+                }
+                done += e.size;
+                if let Some(app) = app {
+                    emit_transfer(app, &task_id, "zip", &base_name, done, total, "progress", None);
+                }
+            }
+        }
+        zw.finish().map_err(|e| e.to_string())?;
     }
-    zw.finish().map_err(|e| e.to_string())?;
     if let Some(app) = app {
-        emit_transfer(app, &task_id, "zip", &base_name, total, total, "done", None);
+        emit_transfer(app, &task_id, if is_tgz { "tgz" } else { "zip" }, &base_name, total, total, "done", None);
     }
     Ok(target.to_string_lossy().into_owned())
 }
@@ -2386,12 +2455,12 @@ mod tests {
             dir.join("src").to_string_lossy().to_string(),
             dir.join("top.txt").to_string_lossy().to_string(),
         ];
-        let out = create_archive_impl(None, &dir.to_string_lossy(), "pkg", &items).unwrap();
+        let out = create_archive_impl(None, &dir.to_string_lossy(), "pkg", &items, "zip").unwrap();
         let out_path = std::path::Path::new(&out);
         assert!(out_path.exists(), "zip 应已生成");
         assert_eq!(out_path.file_name().unwrap().to_str().unwrap(), "pkg.zip");
         // 重名 → 自动加序号
-        let out2 = create_archive_impl(None, &dir.to_string_lossy(), "pkg", &items).unwrap();
+        let out2 = create_archive_impl(None, &dir.to_string_lossy(), "pkg", &items, "zip").unwrap();
         assert!(out2.ends_with("pkg (2).zip"), "重名应加序号: {out2}");
         // 校验 zip 内容
         let f = std::fs::File::open(&out).unwrap();
@@ -2405,6 +2474,34 @@ mod tests {
         use std::io::Read;
         a.read_to_string(&mut buf).unwrap();
         assert_eq!(buf, "beta", "内容应完整");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_create_archive_tar_gz() {
+        let dir = std::env::temp_dir().join(format!("uec_tgz_create_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir.join("docs/sub")).unwrap();
+        fs::write(dir.join("docs/readme.md"), "# hi").unwrap();
+        fs::write(dir.join("docs/sub/conf.json"), "{}").unwrap();
+        let items = vec![dir.join("docs").to_string_lossy().to_string()];
+        let out = create_archive_impl(None, &dir.to_string_lossy(), "docs", &items, "tar.gz").unwrap();
+        let out_path = std::path::Path::new(&out);
+        assert!(out_path.exists(), "tar.gz 应已生成");
+        assert!(out.ends_with("docs.tar.gz"), "扩展名: {out}");
+        // 重名 → a (2).tar.gz（双扩展名序号）
+        let out2 = create_archive_impl(None, &dir.to_string_lossy(), "docs", &items, "tar.gz").unwrap();
+        assert!(out2.ends_with("docs (2).tar.gz"), "重名序号: {out2}");
+        // 校验内容
+        let f = std::fs::File::open(&out).unwrap();
+        let dec = flate2::read::GzDecoder::new(f);
+        let mut ar = tar::Archive::new(dec);
+        let names: Vec<String> = ar.entries().unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default())
+            .collect();
+        assert!(names.contains(&"docs/readme.md".to_string()), "含 docs/readme.md: {names:?}");
+        assert!(names.contains(&"docs/sub/conf.json".to_string()), "含 docs/sub/conf.json: {names:?}");
         let _ = fs::remove_dir_all(&dir);
     }
     #[test]

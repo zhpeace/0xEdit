@@ -46,6 +46,8 @@ export class FileTree {
   private arcTreePath = "";
   private selected: HTMLElement | null = null;
   private selectedPaths = new Set<string>();
+  // Shift 范围选锚点（最后一次单击/加选/范围选的节点）
+  private selectAnchor: string | null = null;
   // 展开状态记录（refreshAll/render 重绘后恢复，避免操作后树被收起）
   private expandedDirs = new Set<string>();   // 物理目录 path
   private expandedArcs = new Set<string>();   // 归档文件 arcPath（树内展开）
@@ -96,6 +98,7 @@ export class FileTree {
       <div class="ctx-item" data-act="extract-here">${t("解压到当前文件夹")}</div>
       <div class="ctx-item" data-act="extract-named">${t("解压到 ")}<span data-name-label></span>\\</div>
       <div class="ctx-item" data-act="archive-zip">压缩为 ZIP…</div>
+      <div class="ctx-item" data-act="archive-targz">压缩为 TAR.GZ…</div>
       <div class="ctx-item" data-act="newfile">${t("新建文件")}</div>
       <div class="ctx-item" data-act="newdir">${t("新建文件夹")}</div>
       <div class="ctx-sep"></div>
@@ -438,7 +441,13 @@ export class FileTree {
       return;
     }
     const isArrow = (e.target as HTMLElement).classList.contains("ft-arrow");
-    this.select(node, e.metaKey || e.ctrlKey);
+    // 加选（⌘/Ctrl+单击）不弹右键菜单：即使系统已触发 contextmenu，也在同一次交互的 click 阶段立即关闭
+    if (e.metaKey || e.ctrlKey) this.ctx.classList.add("hidden");
+    if (e.shiftKey) {
+      this.selectRange(node);
+    } else {
+      this.select(node, e.metaKey || e.ctrlKey);
+    }
     if (this.arcView) {
       // 进入视图模式：虚拟目录单击箭头 = 内联展开/收起（Finder 语义），双击 = 进入
       if (node.classList.contains("ft-vdir") && isArrow) {
@@ -502,6 +511,7 @@ export class FileTree {
       this.selectedPaths.clear();
       this.selected = node;
       this.selectedPaths.add(node.dataset.path || "");
+      this.selectAnchor = node.dataset.path || null;
     } else {
       const p = node.dataset.path || "";
       if (this.selectedPaths.has(p)) {
@@ -510,8 +520,32 @@ export class FileTree {
       } else {
         this.selectedPaths.add(p);
         this.selected = node;
+        this.selectAnchor = p;
       }
     }
+    this.syncSelected();
+  }
+
+  // Shift+单击 范围选：按树内可见顺序（含展开的子节点），选中锚点与目标之间的全部节点
+  private selectRange(target: HTMLElement) {
+    const targetPath = target.dataset.path || "";
+    if (!targetPath) return;
+    const nodes = [...this.el.querySelectorAll<HTMLElement>(".ft-node")].filter(
+      (n) => n.dataset.path,
+    );
+    const tIdx = nodes.indexOf(target);
+    if (tIdx < 0) return;
+    let aIdx = nodes.findIndex((n) => n.dataset.path === this.selectAnchor);
+    if (aIdx < 0) {
+      // 无有效锚点：退化为单选该节点
+      this.select(target, false);
+      return;
+    }
+    const [lo, hi] = aIdx <= tIdx ? [aIdx, tIdx] : [tIdx, aIdx];
+    this.selectedPaths.clear();
+    this.selected = target;
+    for (let i = lo; i <= hi; i++) this.selectedPaths.add(nodes[i].dataset.path!);
+    this.selectAnchor = targetPath;
     this.syncSelected();
   }
 
@@ -519,6 +553,7 @@ export class FileTree {
     if (!this.selectedPaths.size && !this.selected) return;
     this.selectedPaths.clear();
     this.selected = null;
+    this.selectAnchor = null;
     this.syncSelected();
   }
 
@@ -692,6 +727,7 @@ export class FileTree {
       "extract-here": "解压到当前文件夹",
       "extract-named": "解压到 ",
       "archive-zip": "压缩为 ZIP…",
+      "archive-targz": "压缩为 TAR.GZ…",
       newfile: "新建文件",
       newdir: "新建文件夹",
       rename: "重命名",
@@ -712,6 +748,14 @@ export class FileTree {
   }
 
   private onCtx(e: MouseEvent) {
+    // macOS 上 Ctrl+单击 会被系统当作右键触发 contextmenu（左键 + ctrlKey），
+    // 但 Ctrl+单击 的语义是加选，不应弹右键菜单。
+    // 拦截条件：左键触发（button=0）且带 Ctrl（macOS Ctrl+单击）或非常规键盘触发（detail>0，即物理点击）。
+    // 真右键（button=2）与键盘 Shift+F10（button=0/ctrlKey=false/detail=0）不受影响。
+    if (e.button === 0 && (e.ctrlKey || e.detail > 0)) {
+      e.preventDefault();
+      return;
+    }
     const node = (e.target as HTMLElement).closest<HTMLElement>(".ft-node");
     if (!node) {
       // 空白处：物理目录提供「新建文件/新建文件夹/在终端打开」（Finder 语义）；归档视图只读不弹
@@ -919,14 +963,15 @@ export class FileTree {
       await this.pasteLocal();
       return;
     }
-    if (act === "archive-zip") {
+    if (act === "archive-zip" || act === "archive-targz") {
       const paths = this.effectivePaths();
       if (!paths.length || !this.curDir) return;
-      const first = pathBase(paths[0]).replace(/\.zip$/i, "") || "archive";
-      const name = await this.promptModal(t("压缩为 ZIP"), first);
+      const isTgz = act === "archive-targz";
+      const first = pathBase(paths[0]).replace(/\.zip$/i, "").replace(/\.tar\.gz$/i, "").replace(/\.tgz$/i, "") || "archive";
+      const name = await this.promptModal(isTgz ? t("压缩为 TAR.GZ") : t("压缩为 ZIP"), first);
       if (!name) return;
       try {
-        const dest = await invoke<string>("create_archive", { dir: this.curDir, name, items: paths });
+        const dest = await invoke<string>("create_archive", { dir: this.curDir, name, items: paths, format: isTgz ? "tar.gz" : "zip" });
         this.toast(t("已创建 {name}", { name: pathBase(dest) }));
         this.refreshAll();
       } catch (e) {
