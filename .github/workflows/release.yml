@@ -62,8 +62,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
-          # main 推送也把三平台安装包上传到 Actions artifacts，方便直接下载
-          uploadArtifacts: true
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name }}
           releaseName: "0xEdit ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name }}"
           releaseBody: |
@@ -74,3 +72,18 @@ jobs:
             > macOS 安装包未签名，首次打开如遇系统提示，请右键图标 → 打开。
           releaseDraft: false
           prerelease: false
+
+      # main 推送（不发版）时也把三平台安装包上传到 Actions artifacts
+      - name: Upload installation bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: 0xEdit-installers-${{ runner.os }}
+          if-no-files-found: warn
+          path: |
+            src-tauri/target/release/bundle/macos/*.dmg
+            src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/windows/*.msi
+            src-tauri/target/release/bundle/windows/*.exe
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
