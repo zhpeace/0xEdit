@@ -10,6 +10,9 @@ import { pathBase, localCrumbs } from "./path-util";
 
 const cache = new Map<string, FileEntry[]>();
 
+// Windows 平台判断（盘符切换按钮仅 Windows 显示）
+const IS_WIN = typeof navigator !== "undefined" && /win/i.test(navigator.userAgent);
+
 async function list(path: string): Promise<FileEntry[]> {
   let e = cache.get(path);
   if (!e) {
@@ -133,6 +136,71 @@ export class FileTree {
       e.preventDefault();
       void this.jumpToPath();
     });
+    // 路径栏「盘符切换」按钮（仅 Windows 渲染）：弹出盘符列表，点选直达
+    document.addEventListener("click", (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLElement>("#sb-drive-local");
+      if (!btn) return;
+      e.preventDefault();
+      void this.toggleDrivePop(btn);
+    });
+  }
+
+  // 盘符切换浮层：列出可用盘符（当前盘高亮），点选即进入
+  private async toggleDrivePop(btn: HTMLElement) {
+    const old = document.getElementById("sb-drive-pop");
+    if (old) {
+      old.remove();
+      return;
+    }
+    let drives: string[];
+    try {
+      drives = await invoke<string[]>("list_drives");
+    } catch {
+      drives = [];
+    }
+    if (!drives.length) return;
+    const rect = btn.getBoundingClientRect();
+    const pop = document.createElement("div");
+    pop.id = "sb-drive-pop";
+    pop.className = "ctx";
+    pop.style.left = `${Math.max(4, rect.left)}px`;
+    pop.style.top = `${rect.bottom + 4}px`;
+    const cur = (this.curDir.match(/^[A-Za-z]:/) || [""])[0].toUpperCase();
+    pop.innerHTML = drives
+      .map((d) => {
+        const hi = cur && d.toUpperCase().startsWith(cur) ? " on" : "";
+        return `<div class="ctx-item${hi}" data-drive="${escapeHtml(d)}">${escapeHtml(d)}</div>`;
+      })
+      .join("");
+    pop.querySelectorAll<HTMLElement>(".ctx-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        pop.remove();
+        cleanup();
+        const drive = item.dataset.drive!;
+        this.curDir = drive;
+        this.arcView = null;
+        void this.render(drive);
+      });
+    });
+    const cleanup = () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+    const onDoc = (ev: MouseEvent) => {
+      if (!pop.contains(ev.target as Node) && !btn.contains(ev.target as Node)) {
+        pop.remove();
+        cleanup();
+      }
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        pop.remove();
+        cleanup();
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(pop);
   }
 
   private async jumpToPath() {
@@ -288,8 +356,15 @@ export class FileTree {
           .map((c) => `<span class="ft-crumb${c.exit ? " ft-crumb-exit" : ""}" data-exit="${c.exit ? "1" : ""}" data-kind="arc" data-dir="${escapeHtml(c.dir)}">${escapeHtml(c.label)}</span>`)
           .join('<span class="ft-crumb-sep">/</span>') + btns;
     } else {
+      // Windows 路径栏最左的盘符切换按钮（点击弹出盘符列表）
+      const driveBtn = IS_WIN
+        ? `<button id="sb-drive-local" class="sb-drive" title="${t("切换盘符…")}">` +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="11" rx="2"/><path d="M3 15l2.3-4.6h13.4L21 15"/><path d="M7 18.5h.01M17 18.5h.01"/></svg>' +
+          "</button>"
+        : "";
       const crumbs = localCrumbs(this.curDir);
       bar.innerHTML =
+        driveBtn +
         crumbs
           .map((c) => `<span class="ft-crumb" data-kind="fs" data-path="${escapeHtml(c.path)}">${escapeHtml(c.label)}</span>`)
           .join('<span class="ft-crumb-sep">/</span>') + btns;

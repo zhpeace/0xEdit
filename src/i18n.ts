@@ -31,6 +31,7 @@ const listeners = new Set<() => void>();
 // 简体中文作为基线，无需逐条登记（key 即中文）；少数英文 key 在此补中文兜底。
 const ZH: Record<string, string> = {
   "file.unsaved": "文件 “{name}” 有未保存的更改。",
+  "切换盘符…": "切换盘符…",
   "about.title": "关于 0xEdit",
   "about.text": "基于 Tauri 2 + CodeMirror 6 的跨平台文本与十六进制编辑器",
   "about.feat.editing.title": "核心编辑",
@@ -558,6 +559,7 @@ const EN: Record<string, string> = {
   "显示隐藏文件": "Show Hidden Files",
   "隐藏隐藏文件": "Hide Hidden Files",
   "跳转到路径…": "Jump to Path…",
+  "切换盘符…": "Switch Drive…",
   "路径不存在或不是文件夹": "Path does not exist or is not a folder",
   "已复制路径": "Path copied",
   "复制到…": "Copy to…",
@@ -1253,6 +1255,7 @@ const JA: Record<string, string> = {
   "显示隐藏文件": "隠しファイルを表示",
   "隐藏隐藏文件": "隠しファイルを隠す",
   "跳转到路径…": "パスへ移動…",
+  "切换盘符…": "ドライブ切替…",
   "路径不存在或不是文件夹": "パスが存在しないか、フォルダではありません",
   "已复制路径": "パスをコピーしました",
   "复制到…": "コピー先…",

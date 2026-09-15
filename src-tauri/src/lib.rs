@@ -52,6 +52,26 @@ fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(out)
 }
 
+/// 枚举可用盘符（Windows）。其他平台返回空列表。
+#[tauri::command]
+fn list_drives() -> Result<Vec<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut drives = Vec::new();
+        for c in b'A'..=b'Z' {
+            let p = format!("{}:\\", c as char);
+            if std::path::Path::new(&p).exists() {
+                drives.push(p);
+            }
+        }
+        Ok(drives)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
 #[derive(Serialize)]
 struct TextFile {
     text: String,
@@ -3037,6 +3057,7 @@ pub fn run() {
         .manage(remote_term::TermState(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![
             list_dir,
+            list_drives,
             read_text_file,
             read_text_file_as,
             save_text_file,
